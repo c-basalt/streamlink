@@ -9,6 +9,8 @@ import re
 import json
 import time
 
+from websocket import ABNF
+
 from streamlink.plugin import Plugin, PluginError, pluginmatcher
 from streamlink.plugin.api.websocket import WebsocketClient
 from streamlink.stream.hls import HLSStream
@@ -36,12 +38,6 @@ class FC2Live(Plugin):
         self.title = data['channel_data']['title']
         self.author = data['profile_data']['name']
         self.category = data['channel_data']['category_name']
-        log.info(f"id: {self.id}")
-        log.info(f"title: {self.title}")
-        log.info(f"author: {self.author}")
-        log.info(f"category: {self.category}")
-        log.info(f"cover: {data['channel_data']['image']}")
-        log.info(f"desc: {data['channel_data']['info']}")
         if not data['channel_data'].get('version', None) or not data['channel_data']['is_publish']:
             raise PluginError("The live stream is offline")
         if data['channel_data']['login_only']:
@@ -50,6 +46,13 @@ class FC2Live(Plugin):
             raise PluginError("The live stream is ticket only")
         if data['channel_data']['fee']:
             raise PluginError("The live stream is paid only")
+        log.info(f"id: {self.id}")
+        log.info(f"title: {repr(self.title)}")
+        log.info(f"author: {repr(self.author)}")
+        log.info(f"category: {repr(self.category)}")
+        log.info(f"cover: {repr(data['channel_data']['image'])}")
+        log.info(f"desc: {repr(data['channel_data']['info'])}")
+        log.info(f"start: {data['channel_data']['start']}")
 
         payload = {
             'channel_id': self.channel_id,
@@ -104,14 +107,13 @@ class FC2WSClient(WebsocketClient):
     def on_data(self, wsapp, data, data_type, cont):
         if time.time() - self.last_heartbeat > 30:
             self.send_heartbeat()
-        if data_type == self.OPCODE_TEXT:
+        if data_type == ABNF.OPCODE_TEXT:
             data = json.loads(data)
             if "playlists" in data.get("arguments", {}):
                 playlists = data["arguments"]["playlists"]
                 for playlist in playlists:
                     if playlist['mode'] == 0:
                         self.m3u8_url = playlist['url']
-                log.debug(("%s: %s" % (data['name'], data['arguments']))[:500])
             elif data['name'] in [
                 'initial_connect',
                 'connect_complete',
@@ -123,7 +125,9 @@ class FC2WSClient(WebsocketClient):
                 '_response_', # url or heartbeat
             ]:
                 log.debug(("%s: %s" % (data['name'], data['arguments']))[:500])
+            elif data['name'] in ['comment']:
+                log.debug("%s: %s" % (data['name'], json.dumps(data['arguments'], ensure_ascii=False)))
             else:
-                log.debug("%s: %s" % (data['name'], data['arguments']))
+                log.debug(json.dumps(data, ensure_ascii=False))
 
 __plugin__ = FC2Live
