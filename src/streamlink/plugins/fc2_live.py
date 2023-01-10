@@ -11,7 +11,7 @@ import time
 
 from websocket import ABNF
 
-from streamlink.plugin import Plugin, PluginError, pluginmatcher
+from streamlink.plugin import Plugin, PluginArgument, PluginArguments, PluginError, pluginmatcher
 from streamlink.plugin.api.websocket import WebsocketClient
 from streamlink.stream.hls import HLSStream
 
@@ -23,6 +23,13 @@ log = logging.getLogger(__name__)
     r"https?://live\.fc2\.com/(?P<channel_id>\d+)"
 ))
 class FC2Live(Plugin):
+    arguments = PluginArguments(
+        PluginArgument(
+            "token",
+            sensitive=True,
+            help="`fcu` or `fcus` token in cookie string."
+        )
+    )
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.channel_id = self.match.group("channel_id")
@@ -41,7 +48,14 @@ class FC2Live(Plugin):
         if not data['channel_data'].get('version', None) or not data['channel_data']['is_publish']:
             raise PluginError("The live stream is offline")
         if data['channel_data']['login_only']:
-            raise PluginError("The live stream is login only")
+            token = self.options.get("token")
+            if token is None:
+                raise PluginError("The live stream is login only")
+            elif data['channel_data']['login_only'] > 1:
+                raise PluginError("The live stream is point only")
+            else:
+                self.session.set_option('http-cookies', { 'fcu': token, 'fcus': token })
+                _ = self.session.http.post('https://live.fc2.com/api/userInfo.php')
         if data['channel_data']['ticket_only']:
             raise PluginError("The live stream is ticket only")
         if data['channel_data']['fee']:
@@ -82,6 +96,7 @@ class FC2Live(Plugin):
         else:
             raise PluginError("Failed to get HLS from control server, timed out")
         streams = HLSStream.parse_variant_playlist(self.session, self.wsclient.m3u8_url)
+        log.debug('streams: %s' % str(streams))
         return streams
 
 class FC2WSClient(WebsocketClient):
