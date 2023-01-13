@@ -55,7 +55,11 @@ class FC2Live(Plugin):
                 raise PluginError("The live stream is point only")
             else:
                 self.session.set_option('http-cookies', { 'fcu': token, 'fcus': token })
-                _ = self.session.http.post('https://live.fc2.com/api/userInfo.php')
+                r = self.session.http.post('https://live.fc2.com/api/userInfo.php')
+                if (r.json().get("user_info", {}).get("fc2id", 0)):
+                    log.debug("Use fcu token to login for the stream")
+                else:
+                    raise PluginError("Invalid token for login-only stream")
         if data['channel_data']['ticket_only']:
             raise PluginError("The live stream is ticket only")
         if data['channel_data']['fee']:
