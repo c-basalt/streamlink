@@ -33,7 +33,7 @@ class Plugin8181Live(Plugin):
 
     def _fetch_stream_schedule(self):
         r = self.session.http.get(r"https://8181live.jp/liver/" + self.user_id)
-        for seg in r.text.split('<p class="live_num__index"')[1:]:
+        for seg in reversed(r.text.split('<p class="live_num__index"')[1:]):
             m = re.search(r'href="/live/(\d+)"', seg)
             if not m:
                 continue
@@ -72,13 +72,13 @@ class Plugin8181Live(Plugin):
         try:
             self.id = self.schedule_id
             self.author = re.search(r'liverName:"([^"]+)"', metainfo_str)[1]
-            self.title = json.loads(re.search(r'detail:("[^"]+")', metainfo_str)[1]).split('\n')[0]
+            self.title = json.loads(re.search(r'detail:("[^"]+")', metainfo_str)[1]).split('\n')[0].strip()
             log.info(f"id: {self.id}")
             log.info(f"title: {repr(self.title)}")
             log.info(f"author: {repr(self.author)}")
         except Exception:
             log.warning("error while parsing metainfo")
-        log.debug('stream meta info', metainfo_str)
+        log.debug(f'stream meta info {metainfo_str}')
         streams = HLSStream.parse_variant_playlist(self.session, stream_url)
         log.debug('streams: %s' % str(streams))
         return streams
