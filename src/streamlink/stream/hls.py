@@ -289,7 +289,7 @@ class HLSStreamWorker(SegmentedStreamWorker):
     writer: "HLSStreamWriter"
     stream: "HLSStream"
 
-    SEGMENT_QUEUE_TIMING_THRESHOLD_FACTOR = 2
+    SEGMENT_QUEUE_TIMING_THRESHOLD_FACTOR = 6
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
