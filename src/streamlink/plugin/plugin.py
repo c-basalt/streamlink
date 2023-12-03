@@ -45,7 +45,7 @@ BIT_RATE_WEIGHT_RATIO = 2.8
 
 ALT_WEIGHT_MOD = 0.01
 
-QUALITY_WEIGTHS_EXTRA = {
+QUALITY_WEIGHTS_EXTRA = {
     "other": {
         "live": 1080,
     },
@@ -79,7 +79,7 @@ _COOKIE_KEYS = \
 
 
 def stream_weight(stream):
-    for group, weights in QUALITY_WEIGTHS_EXTRA.items():
+    for group, weights in QUALITY_WEIGHTS_EXTRA.items():
         if stream in weights:
             return weights[stream], group
 
@@ -192,7 +192,7 @@ class _MCollection(List[MType]):
         self._names: Dict[str, MType] = {}
 
     def __getitem__(self, item):
-        return self._names[item] if type(item) is str else super().__getitem__(item)
+        return self._names[item] if isinstance(item, str) else super().__getitem__(item)
 
 
 class Matchers(_MCollection[Matcher]):
@@ -250,6 +250,9 @@ class Plugin:
 
     options: Options
     """Plugin options, initialized with the user-set values of the plugin's arguments"""
+
+    cache: Cache
+    """Plugin cache object, used to store plugin-specific data other than HTTP session cookies"""
 
     # plugin metadata attributes
     id: Optional[str] = None
@@ -696,7 +699,7 @@ def pluginargument(
 
     def decorator(cls: Type[Plugin]) -> Type[Plugin]:
         if not issubclass(cls, Plugin):
-            raise TypeError(f"{repr(cls)} is not a Plugin")
+            raise TypeError(f"{repr(cls)} is not a Plugin")  # noqa: RUF010  # builtins.repr gets monkeypatched in tests
         if cls.arguments is None:
             cls.arguments = Arguments()
         cls.arguments.add(arg)

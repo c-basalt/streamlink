@@ -8,9 +8,12 @@ from time import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
+from requests import Response
+
 from streamlink.exceptions import PluginError, StreamError
 from streamlink.session import Streamlink
-from streamlink.stream.dash_manifest import MPD, Representation, Segment, freeze_timeline
+from streamlink.stream.dash.manifest import MPD, Representation, freeze_timeline
+from streamlink.stream.dash.segment import DASHSegment
 from streamlink.stream.ffmpegmux import FFMPEGMuxer
 from streamlink.stream.segmented import SegmentedStreamReader, SegmentedStreamWorker, SegmentedStreamWriter
 from streamlink.stream.stream import Stream
@@ -19,15 +22,15 @@ from streamlink.utils.parse import parse_xml
 from streamlink.utils.times import now
 
 
-log = logging.getLogger(__name__)
+log = logging.getLogger(".".join(__name__.split(".")[:-1]))
 
 
-class DASHStreamWriter(SegmentedStreamWriter):
+class DASHStreamWriter(SegmentedStreamWriter[DASHSegment, Response]):
     reader: "DASHStreamReader"
     stream: "DASHStream"
 
-    def fetch(self, segment: Segment, retries: Optional[int] = None):
-        if self.closed or not retries:
+    def fetch(self, segment: DASHSegment):
+        if self.closed:
             return
 
         name = segment.name
@@ -49,11 +52,11 @@ class DASHStreamWriter(SegmentedStreamWriter):
 
         try:
             return self.session.http.get(
-                segment.url,
+                segment.uri,
                 timeout=self.timeout,
                 exception=StreamError,
                 headers=headers,
-                retries=retries,
+                retries=self.retries,
                 **request_args,
             )
         except StreamError as err:
@@ -69,7 +72,7 @@ class DASHStreamWriter(SegmentedStreamWriter):
         log.debug(f"{self.reader.mime_type} segment {segment.name}: completed")
 
 
-class DASHStreamWorker(SegmentedStreamWorker):
+class DASHStreamWorker(SegmentedStreamWorker[DASHSegment, Response]):
     reader: "DASHStreamReader"
     writer: "DASHStreamWriter"
     stream: "DASHStream"
@@ -162,7 +165,7 @@ class DASHStreamWorker(SegmentedStreamWorker):
         return changed
 
 
-class DASHStreamReader(SegmentedStreamReader):
+class DASHStreamReader(SegmentedStreamReader[DASHSegment, Response]):
     __worker__ = DASHStreamWorker
     __writer__ = DASHStreamWriter
 
@@ -175,10 +178,8 @@ class DASHStreamReader(SegmentedStreamReader):
         stream: "DASHStream",
         representation: Representation,
         timestamp: datetime,
-        *args,
-        **kwargs,
     ):
-        super().__init__(stream, *args, **kwargs)
+        super().__init__(stream)
         self.ident = representation.ident
         self.mime_type = representation.mimeType
         self.timestamp = timestamp
@@ -213,7 +214,7 @@ class DASHStream(Stream):
         self.audio_representation = audio_representation
         self.args = session.http.valid_request_args(**kwargs)
 
-    def __json__(self):
+    def __json__(self):  # noqa: PLW3201
         json = dict(type=self.shortname())
 
         if self.mpd.url:

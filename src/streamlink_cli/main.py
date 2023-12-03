@@ -5,6 +5,7 @@ import os
 import platform
 import re
 import signal
+import ssl
 import sys
 import warnings
 from contextlib import closing, suppress
@@ -49,11 +50,11 @@ def get_formatter(plugin: Plugin):
         {
             "url": lambda: args.url,
             "plugin": lambda: plugin.module,
-            "id": lambda: plugin.get_id(),
-            "author": lambda: plugin.get_author(),
-            "category": lambda: plugin.get_category(),
-            "game": lambda: plugin.get_category(),
-            "title": lambda: plugin.get_title(),
+            "id": plugin.get_id,
+            "author": plugin.get_author,
+            "category": plugin.get_category,
+            "game": plugin.get_category,
+            "title": plugin.get_title,
             "time": lambda: datetime.now(tz=LOCALTIMEZONE),
         },
         {
@@ -139,8 +140,9 @@ def create_output(formatter: Formatter) -> Union[FileOutput, PlayerOutput]:
         log.info(f"Starting player: {args.player}")
 
         return PlayerOutput(
-            args.player,
-            args.player_args,
+            path=args.player,
+            args=args.player_args,
+            env=args.player_env,
             quiet=not args.verbose_player,
             kill=not args.player_no_close,
             namedpipe=namedpipe,
@@ -186,8 +188,9 @@ def output_stream_http(
 
         server = create_http_server()
         player = output = PlayerOutput(
-            args.player,
-            args.player_args,
+            path=args.player,
+            args=args.player_args,
+            env=args.player_env,
             quiet=not args.verbose_player,
             filename=server.url,
             title=formatter.title(args.title, defaults=DEFAULT_STREAM_METADATA) if args.title else args.url,
@@ -275,8 +278,9 @@ def output_stream_passthrough(stream, formatter: Formatter):
         return False
 
     output = PlayerOutput(
-        args.player,
-        args.player_args,
+        path=args.player,
+        args=args.player_args,
+        env=args.player_env,
         quiet=not args.verbose_player,
         call=True,
         filename=url,
@@ -413,7 +417,7 @@ def handle_stream(plugin: Plugin, streams: Dict[str, Stream], stream_name: str) 
 
         formatter = get_formatter(plugin)
 
-        for name in [stream_name] + alt_streams:
+        for name in [stream_name, *alt_streams]:
             stream = streams[name]
             stream_type = type(stream).shortname()
 
@@ -671,7 +675,7 @@ def setup_config_args(parser, ignore_unknown=False):
     if streamlink and args.url:
         # Only load first available plugin config
         with suppress(NoPluginError):
-            pluginname, pluginclass, resolved_url = streamlink.resolve_url(args.url)
+            pluginname, _pluginclass, _resolved_url = streamlink.resolve_url(args.url)
             for config_file in CONFIG_FILES:  # pragma: no branch
                 config_file = config_file.with_name(f"{config_file.name}.{pluginname}")
                 if not config_file.is_file():
@@ -787,6 +791,7 @@ def log_current_versions():
 
     log.debug(f"OS:         {os_version}")
     log.debug(f"Python:     {platform.python_version()}")
+    log.debug(f"OpenSSL:    {ssl.OPENSSL_VERSION}")
     log.debug(f"Streamlink: {streamlink_version}")
 
     # https://peps.python.org/pep-0508/#names

@@ -136,6 +136,12 @@ Linux and BSD
       - See the `Linux AppImages`_ section below
     * - :octicon:`verified` Python pip
       - See the `PyPI package and source code`_ section below
+    * - :octicon:`package-dependents` `Alpine Linux (edge, testing)`_
+      - .. code-block:: bash
+
+            sudo apk add streamlink
+
+        `Enabling the edge/testing repository`_
     * - :octicon:`package-dependents` `Arch Linux`_
       - .. code-block:: bash
 
@@ -157,16 +163,26 @@ Linux and BSD
       - .. code-block:: bash
 
             # If you don't have Debian backports already (see link below):
-            echo "deb http://deb.debian.org/debian bullseye-backports main" | sudo tee "/etc/apt/sources.list.d/streamlink.list"
+            echo "deb http://deb.debian.org/debian bookworm-backports main" | sudo tee "/etc/apt/sources.list.d/streamlink.list"
 
             sudo apt update
-            sudo apt -t bullseye-backports install streamlink
+            sudo apt -t bookworm-backports install streamlink
 
         `Installing Debian backported packages`_
     * - :octicon:`package-dependents` `Fedora`_
       - .. code-block:: bash
 
             sudo dnf install streamlink
+    * - :octicon:`package-dependents` `FreeBSD (pkg)`_
+      - .. code-block:: bash
+
+            pkg install multimedia/streamlink
+
+    * - :octicon:`package-dependents` `FreeBSD (ports)`_
+      - .. code-block:: bash
+
+            cd /usr/ports/multimedia/streamlink
+            make config install clean
     * - :octicon:`package-dependents` `Gentoo Linux`_
       - .. code-block:: bash
 
@@ -195,20 +211,24 @@ Linux and BSD
 
             sudo xbps-install streamlink
 
+.. _Alpine Linux (edge, testing): https://pkgs.alpinelinux.org/packages?name=streamlink
 .. _Arch Linux: https://archlinux.org/packages/extra/any/streamlink/
 .. _Arch Linux (aur, git): https://aur.archlinux.org/packages/streamlink-git/
-.. _Debian (sid, testing): https://packages.debian.org/unstable/streamlink
-.. _Debian (stable): https://packages.debian.org/unstable/streamlink
+.. _Debian (sid, testing): https://packages.debian.org/sid/streamlink
+.. _Debian (stable): https://packages.debian.org/bookworm-backports/streamlink
 .. _Fedora: https://src.fedoraproject.org/rpms/python-streamlink
+.. _FreeBSD (pkg): https://ports.freebsd.org/cgi/ports.cgi?query=streamlink&stype=name
+.. _FreeBSD (ports): https://www.freshports.org/multimedia/streamlink
 .. _Gentoo Linux: https://packages.gentoo.org/package/net-misc/streamlink
 .. _NetBSD (pkgsrc): https://pkgsrc.se/multimedia/streamlink
 .. _NixOS: https://github.com/NixOS/nixpkgs/tree/master/pkgs/applications/video/streamlink
 .. _openSUSE: https://build.opensuse.org/package/show/multimedia:apps/streamlink
-.. _Solus: https://dev.getsol.us/source/streamlink/
+.. _Solus: https://github.com/getsolus/packages/tree/main/packages/s/streamlink
 .. _Void: https://github.com/void-linux/void-packages/tree/master/srcpkgs/streamlink
 
-.. _Installing AUR packages: https://wiki.archlinux.org/index.php/Arch_User_Repository#Installing_packages
-.. _Installing Debian backported packages: https://wiki.debian.org/Backports#Using_the_command_line
+.. _Enabling the edge/testing repository: https://wiki.alpinelinux.org/wiki/Repositories#Edge
+.. _Installing AUR packages: https://wiki.archlinux.org/index.php/Arch_User_Repository
+.. _Installing Debian backported packages: https://wiki.debian.org/Backports
 .. _NixOS channel: https://search.nixos.org/packages?show=streamlink&query=streamlink
 
 
@@ -221,6 +241,8 @@ Package maintainers
 
     * - Distribution / Platform
       - Maintainer
+    * - Alpine Linux
+      - Robert Sacks <robert at sacks.email>
     * - Arch
       - Giancarlo Razzolini <grazzolini at archlinux.org>
     * - Arch (aur, git)
@@ -231,6 +253,8 @@ Package maintainers
       - Alexis Murzeau <amubtdx at gmail.com>
     * - Fedora
       - Mohamed El Morabity <melmorabity at fedoraproject.org>
+    * - FreeBSD
+      - Takefu <takefu at airport.fm>
     * - Gentoo
       - soredake <fdsfgs at krutt.org>
     * - NetBSD
@@ -319,18 +343,24 @@ On some systems, this isn't the case by default and an alternative, like :comman
 Virtual environment
 -------------------
 
-Another method of installing Streamlink in a non-system-wide way is
-using `virtualenv`_, which creates a user owned Python environment instead.
+Another way of installing Streamlink in a non-system-wide way is using the `venv`_ or `virtualenv`_ Python packages,
+which both create a user-owned Python environment which is isolated from the system's main Python package environment.
 
-Install with ``virtualenv`` and ``pip`` commands
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+While `venv`_ is part of Python's standard library since ``3.3``, `virtualenv`_ is the project which `venv`_ was built from,
+but it first needs to be installed, either via `pip`_ or from the system's package manager. It also implements more features,
+so depending on your needs, you may want to use `virtualenv`_ instead of `venv`_.
+
+Install using ``venv`` and ``pip``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: bash
 
     # Create a new environment
-    virtualenv ~/myenv
+    python -m venv ~/myenv
 
     # Activate the environment
+    # note: non-POSIX compliant shells like FISH or PowerShell have different activation script file names
+    # note: on Windows, the `bin` subdirectory is called `Scripts`
     source ~/myenv/bin/activate
 
     # *Either* install the latest Streamlink release from PyPI in the virtual environment
@@ -348,10 +378,10 @@ Install with ``virtualenv`` and ``pip`` commands
     # Use Streamlink without activating the environment
     ~/myenv/bin/streamlink ...
 
-Install with ``pipx`` command
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Install using ``pipx``
+^^^^^^^^^^^^^^^^^^^^^^
 
-The `pipx`_ command combines the functionality of the ``virtualenv`` and ``pip`` commands. It may be necessary to
+The `pipx`_ project combines the functionality of both ``venv`` and ``pip``. It may be necessary to
 install it first, either with a system package manager, or using ``pip``, as detailed in the `documentation <pipx_>`_.
 
 .. code-block:: bash
@@ -365,14 +395,39 @@ install it first, either with a system package manager, or using ``pip``, as det
     # Use Streamlink
     streamlink ...
 
-.. _virtualenv: https://virtualenv.readthedocs.io/en/latest/
+.. _venv: https://docs.python.org/3/library/venv.html
+.. _virtualenv: https://virtualenv.pypa.io/en/stable/
 .. _pipx: https://pypa.github.io/pipx/
 
 
-Dependencies
-------------
+Source distribution
+-------------------
 
-To install Streamlink from source you will need these dependencies.
+In addition to the pre-built wheels uploaded to PyPI, Streamlink's source distribution tarballs get uploaded
+to both PyPI and GitHub releases. These tarballs are meant for packagers and are signed using the following PGP key:
+
+:bdg-link-primary-line:`44448A298D5C3618 <https://keyserver.ubuntu.com/pks/lookup?search=44448A298D5C3618&fingerprint=on&op=index>`
+
+Please be aware that PyPI has dropped support for uploading new release file signatures in May 2023, so those can only be found
+on `GitHub releases`_ now.
+
+See the `Dependencies`_ section down below for the required build- and runtime-requirements.
+
+.. warning::
+
+    Please avoid building Streamlink from tarballs generated by GitHub from (tagged) git commits,
+    as they are lacking the built-in release version string. The ``versioningit`` build-requirement also won't be able
+    to find the correct version, as the content is not part of a git repository.
+
+    Instead, build from Streamlink's signed source-distribution tarballs which are uploaded to PyPI and GitHub releases,
+    or from the cloned git repository.
+
+.. _GitHub Releases: https://github.com/streamlink/streamlink/releases
+
+Dependencies
+^^^^^^^^^^^^
+
+To install Streamlink from source, you will need these dependencies.
 
 Since :ref:`4.0.0 <changelog:streamlink 4.0.0 (2022-05-01)>`,
 Streamlink defines a `build system <pyproject.toml_>`__ according to `PEP-517`_ / `PEP-518`_.
@@ -397,7 +452,8 @@ Streamlink defines a `build system <pyproject.toml_>`__ according to `PEP-517`_ 
     * - build
       - `versioningit`_
       - At least version **2.0.0** |br|
-        Used for generating the version string from git when building, or when running in an editable install
+        Used for generating the version string from git when building, or when running in an editable install.
+        Not needed when building wheels and installing from the source distribution.
     * - runtime
       - `certifi`_
       - Used for loading the CA bundle extracted from the Mozilla Included CA Certificate List

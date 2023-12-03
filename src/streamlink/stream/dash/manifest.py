@@ -1,5 +1,4 @@
 import copy
-import dataclasses
 import logging
 import math
 import re
@@ -7,7 +6,6 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from itertools import count, repeat
-from pathlib import Path
 from typing import (
     Any,
     Callable,
@@ -32,6 +30,7 @@ from isodate import Duration, parse_datetime, parse_duration  # type: ignore[imp
 # noinspection PyProtectedMember
 from lxml.etree import _Attrib, _Element
 
+from streamlink.stream.dash.segment import DASHSegment, TimelineSegment
 from streamlink.utils.times import UTC, fromtimestamp, now
 
 
@@ -39,41 +38,6 @@ log = logging.getLogger(__name__)
 
 EPOCH_START = fromtimestamp(0)
 ONE_SECOND = timedelta(seconds=1)
-
-SEGMENT_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
-
-
-@dataclasses.dataclass
-class Segment:
-    url: str
-    number: Optional[int] = None
-    duration: Optional[float] = None
-    available_at: datetime = EPOCH_START
-    init: bool = False
-    content: bool = True
-    byterange: Optional[Tuple[int, Optional[int]]] = None
-
-    @property
-    def name(self) -> str:
-        if self.init and not self.content:
-            return "initialization"
-        if self.number is not None:
-            return str(self.number)
-        return Path(urlparse(self.url).path).resolve().name
-
-    @property
-    def available_in(self) -> float:
-        return max(0.0, (self.available_at - now()).total_seconds())
-
-    @property
-    def availability(self) -> str:
-        return f"{self.available_at.strftime(SEGMENT_TIME_FORMAT)} / {now().strftime(SEGMENT_TIME_FORMAT)}"
-
-
-@dataclasses.dataclass
-class TimelineSegment:
-    t: int
-    d: int
 
 
 def _identity(x):
@@ -113,8 +77,14 @@ class MPDParsers:
         return mpdtype
 
     @staticmethod
-    def duration(duration: str) -> Union[timedelta, Duration]:
-        return parse_duration(duration)
+    def duration(anchor: Optional[datetime] = None) -> Callable[[str], timedelta]:
+        def duration_to_timedelta(duration: str) -> timedelta:
+            parsed: Union[timedelta, Duration] = parse_duration(duration)
+            if isinstance(parsed, Duration):
+                return parsed.totimedelta(start=anchor or now())
+            return parsed
+
+        return duration_to_timedelta
 
     @staticmethod
     def datetime(dt: str) -> datetime:
@@ -322,6 +292,9 @@ class MPD(MPDNode):
     parent: None  # type: ignore[assignment]
     timelines: Dict[TTimelineIdent, int]
 
+    DEFAULT_MINBUFFERTIME = 3.0
+    DEFAULT_LIVE_EDGE_SEGMENTS = 3
+
     def __init__(self, *args, url: Optional[str] = None, **kwargs) -> None:
         # top level has no parent
         kwargs["root"] = self
@@ -343,19 +316,10 @@ class MPD(MPDNode):
             parser=MPDParsers.type,
             default="static",
         )
-        self.minimumUpdatePeriod = self.attr(
-            "minimumUpdatePeriod",
-            parser=MPDParsers.duration,
-            default=timedelta(),
-        )
-        self.minBufferTime: Union[timedelta, Duration] = self.attr(
-            "minBufferTime",
-            parser=MPDParsers.duration,
-            required=True,
-        )
-        self.timeShiftBufferDepth = self.attr(
-            "timeShiftBufferDepth",
-            parser=MPDParsers.duration,
+        self.publishTime = self.attr(
+            "publishTime",
+            parser=MPDParsers.datetime,
+            required=self.type == "dynamic",
         )
         self.availabilityStartTime = self.attr(
             "availabilityStartTime",
@@ -363,26 +327,38 @@ class MPD(MPDNode):
             default=EPOCH_START,
             required=self.type == "dynamic",
         )
-        self.publishTime = self.attr(
-            "publishTime",
-            parser=MPDParsers.datetime,
-            required=self.type == "dynamic",
-        )
         self.availabilityEndTime = self.attr(
             "availabilityEndTime",
             parser=MPDParsers.datetime,
         )
+        self.minBufferTime: timedelta = self.attr(  # type: ignore[assignment]
+            "minBufferTime",
+            parser=MPDParsers.duration(self.publishTime),
+            required=True,
+        )
+        self.minimumUpdatePeriod = self.attr(
+            "minimumUpdatePeriod",
+            parser=MPDParsers.duration(self.publishTime),
+            default=timedelta(),
+        )
+        self.timeShiftBufferDepth = self.attr(
+            "timeShiftBufferDepth",
+            parser=MPDParsers.duration(self.publishTime),
+        )
         self.mediaPresentationDuration = self.attr(
             "mediaPresentationDuration",
-            parser=MPDParsers.duration,
+            parser=MPDParsers.duration(self.publishTime),
             default=timedelta(),
         )
         self.suggestedPresentationDelay = self.attr(
             "suggestedPresentationDelay",
-            parser=MPDParsers.duration,
-            # if there is no delay, use a delay of 3 seconds
+            parser=MPDParsers.duration(self.publishTime),
+            # if there is no delay, use a delay of 3 seconds, but respect the manifest's minBufferTime
             # TODO: add a customizable parameter for this
-            default=timedelta(seconds=3),
+            default=timedelta(seconds=max(
+                self.DEFAULT_MINBUFFERTIME,
+                self.minBufferTime.total_seconds(),
+            )),
         )
 
         # parse children
@@ -459,12 +435,12 @@ class Period(MPDNode):
         )
         self.duration = self.attr(
             "duration",
-            parser=MPDParsers.duration,
+            parser=MPDParsers.duration(self.root.publishTime),
             default=timedelta(),
         )
         self.start = self.attr(
             "start",
-            parser=MPDParsers.duration,
+            parser=MPDParsers.duration(self.root.publishTime),
             default=timedelta(),
         )
 
@@ -631,15 +607,21 @@ class Representation(_RepresentationBaseType):
     def bandwidth_rounded(self) -> float:
         return round(self.bandwidth, 1 - int(math.log10(self.bandwidth)))
 
-    def segments(self, timestamp: Optional[datetime] = None, **kwargs) -> Iterator[Segment]:
+    def segments(
+        self,
+        init: bool = True,
+        timestamp: Optional[datetime] = None,
+        **kwargs,
+    ) -> Iterator[DASHSegment]:
         """
         Segments are yielded when they are available
 
         Segments appear on a timeline, for dynamic content they are only available at a certain time
         and sometimes for a limited time. For static content they are all available at the same time.
 
+        :param init: Yield the init segment and perform other initialization logic for dynamic manifests
         :param timestamp: Optional initial timestamp for syncing timelines of multiple substreams
-        :param kwargs: extra args to pass to the segment template
+        :param kwargs: extra args to pass to the segment template/list
         :return: yields Segments
         """
 
@@ -651,17 +633,22 @@ class Representation(_RepresentationBaseType):
             yield from segmentTemplate.segments(
                 self.ident,
                 self.base_url,
+                init=init,
                 timestamp=timestamp,
                 RepresentationID=self.id,
                 Bandwidth=int(self.bandwidth * 1000),
                 **kwargs,
             )
         elif segmentList:
-            yield from segmentList.segments()
+            yield from segmentList.segments(
+                self.ident,
+                init=init,
+                **kwargs,
+            )
         else:
-            yield Segment(
-                url=self.base_url,
-                number=None,
+            yield DASHSegment(
+                uri=self.base_url,
+                num=-1,
                 duration=self.period.duration.total_seconds() or self.root.mediaPresentationDuration.total_seconds(),
                 available_at=self.period.availabilityStartTime,
                 init=True,
@@ -730,7 +717,7 @@ class _MultipleSegmentBaseType(_SegmentBaseType):
             default=self._find_default("startNumber", 1),
         )
 
-        self.duration_seconds = self.duration / self.timescale if self.duration else None
+        self.duration_seconds = self.duration / self.timescale if self.duration else 0.0
 
         self.segmentTimeline = self.only_child(SegmentTimeline) or self._find_default("segmentTimeline")
 
@@ -747,27 +734,86 @@ class SegmentList(_MultipleSegmentBaseType):
 
         self.segmentURLs = self.children(SegmentURL)
 
-    def segments(self) -> Iterator[Segment]:
-        if self.initialization:  # pragma: no branch
-            yield Segment(
-                url=self.make_url(self.initialization.source_url),
-                number=None,
-                duration=None,
+    # noinspection PyUnusedLocal
+    def segments(
+        self,
+        ident: TTimelineIdent,
+        init: bool = True,
+        **kwargs,
+    ) -> Iterator[DASHSegment]:
+        if init and self.initialization:  # pragma: no branch
+            yield DASHSegment(
+                uri=self.make_url(self.initialization.source_url),
+                num=-1,
+                duration=0.0,
                 available_at=self.period.availabilityStartTime,
                 init=True,
                 content=False,
                 byterange=self.initialization.range,
             )
-        for number, segment_url in enumerate(self.segmentURLs, self.startNumber):
-            yield Segment(
-                url=self.make_url(segment_url.media),
-                number=number,
+        for num, segment_url in self.segment_urls(ident, init):
+            yield DASHSegment(
+                uri=self.make_url(segment_url.media),
+                num=num,
                 duration=self.duration_seconds,
                 available_at=self.period.availabilityStartTime,
                 init=False,
                 content=True,
                 byterange=segment_url.media_range,
             )
+
+    def segment_urls(self, ident: TTimelineIdent, init: bool) -> Iterator[Tuple[int, "SegmentURL"]]:
+        if init:
+            if self.root.type == "static":
+                # yield all segments in a static manifest
+                start_number = self.startNumber
+                segment_urls = self.segmentURLs
+            else:
+                # yield a specific number of segments from the live-edge of dynamic manifests
+                start_number = self.calculate_optimal_start()
+                segment_urls = self.segmentURLs[start_number - self.startNumber:]
+
+        else:
+            # skip segments with a lower number than the remembered segment number
+            # and check if we've skipped any segments after reloading the manifest
+            start_number = self.root.timelines[ident]
+            offset = start_number - self.startNumber
+
+            if offset >= 0:
+                # no segments were skipped: yield a slice of the segments
+                segment_urls = self.segmentURLs[offset:]
+            else:
+                # segments were skipped: yield all segments and set the correct segment number
+                log.warning(
+                    (
+                        f"Skipped segments {start_number}-{self.startNumber - 1} after manifest reload. "
+                        if offset < -1 else
+                        f"Skipped segment {start_number} after manifest reload. "
+                    )
+                    + "This is unsupported and will result in incoherent output data.",
+                )
+                start_number = self.startNumber
+                segment_urls = self.segmentURLs
+
+        # remember the next segment number
+        self.root.timelines[ident] = start_number + len(segment_urls)
+
+        yield from enumerate(segment_urls, start_number)
+
+    def calculate_optimal_start(self) -> int:
+        """Calculate the optimal segment number to start based on the suggestedPresentationDelay"""
+        suggested_delay = self.root.suggestedPresentationDelay
+
+        if self.duration_seconds == 0.0:
+            log.info(f"Unknown segment duration. Falling back to an offset of {MPD.DEFAULT_LIVE_EDGE_SEGMENTS} segments.")
+            offset = MPD.DEFAULT_LIVE_EDGE_SEGMENTS
+        else:
+            offset = max(0, math.ceil(suggested_delay.total_seconds() / self.duration_seconds))
+
+        start = self.startNumber + len(self.segmentURLs) - offset
+        log.debug(f"Calculated optimal offset is {offset} segments. First segment is {start}.")
+
+        return start
 
     def make_url(self, url: Optional[str]) -> str:
         return BaseURL.join(self.base_url, url) if url else self.base_url
@@ -792,25 +838,26 @@ class SegmentTemplate(_MultipleSegmentBaseType):
         self,
         ident: TTimelineIdent,
         base_url: str,
+        init: bool = True,
         timestamp: Optional[datetime] = None,
         **kwargs,
-    ) -> Iterator[Segment]:
-        if kwargs.pop("init", True):  # pragma: no branch
+    ) -> Iterator[DASHSegment]:
+        if init:
             init_url = self.format_initialization(base_url, **kwargs)
             if init_url:  # pragma: no branch
-                yield Segment(
-                    url=init_url,
-                    number=None,
-                    duration=None,
+                yield DASHSegment(
+                    uri=init_url,
+                    num=-1,
+                    duration=0.0,
                     available_at=self.period.availabilityStartTime,
                     init=True,
                     content=False,
                     byterange=None,
                 )
-        for media_url, number, available_at in self.format_media(ident, base_url, timestamp=timestamp, **kwargs):
-            yield Segment(
-                url=media_url,
-                number=number,
+        for media_url, num, available_at in self.format_media(ident, base_url, timestamp=timestamp, **kwargs):
+            yield DASHSegment(
+                uri=media_url,
+                num=num,
                 duration=self.duration_seconds,
                 available_at=available_at,
                 init=False,

@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import shlex
 import subprocess
@@ -8,7 +9,7 @@ from contextlib import suppress
 from pathlib import Path
 from shutil import which
 from time import sleep
-from typing import ClassVar, Dict, List, Optional, TextIO, Type, Union
+from typing import ClassVar, Dict, List, Mapping, Optional, Sequence, TextIO, Tuple, Type, Union
 
 from streamlink.compat import is_win32
 from streamlink.exceptions import StreamlinkWarning
@@ -90,7 +91,7 @@ class PlayerArgs:
 
 
 class PlayerArgsVLC(PlayerArgs):
-    EXECUTABLES = [
+    EXECUTABLES: ClassVar[List[re.Pattern]] = [
         re.compile(r"^vlc$", re.IGNORECASE),
     ]
 
@@ -109,7 +110,7 @@ class PlayerArgsVLC(PlayerArgs):
 
 
 class PlayerArgsMPV(PlayerArgs):
-    EXECUTABLES = [
+    EXECUTABLES: ClassVar[List[re.Pattern]] = [
         re.compile(r"^mpv$", re.IGNORECASE),
     ]
 
@@ -124,7 +125,7 @@ class PlayerArgsMPV(PlayerArgs):
 
 
 class PlayerArgsPotplayer(PlayerArgs):
-    EXECUTABLES = [
+    EXECUTABLES: ClassVar[List[re.Pattern]] = [
         re.compile(r"^potplayer(?:mini(?:64)?)?$", re.IGNORECASE),
     ]
 
@@ -158,6 +159,7 @@ class PlayerOutput(Output):
         self,
         path: Path,
         args: str = "",
+        env: Optional[Sequence[Tuple[str, str]]] = None,
         quiet: bool = True,
         kill: bool = True,
         call: bool = False,
@@ -171,6 +173,8 @@ class PlayerOutput(Output):
 
         self.path = path
         self.args = args
+        self.env: Mapping[str, str] = dict(env or {})
+
         self.kill = kill
         self.call = call
         self.quiet = quiet
@@ -248,22 +252,30 @@ class PlayerOutput(Output):
             self._open_subprocess(args)
 
     def _open_call(self, args: List[str]):
-        log.debug(f"Calling: {args!r}")
+        log.debug(f"Calling: {args!r}{f', env: {self.env!r}' if self.env else ''}")
+
+        environ = dict(os.environ)
+        environ.update(self.env)
 
         subprocess.call(
             args,
+            env=environ,
             stdout=self.stdout,
             stderr=self.stderr,
         )
 
     def _open_subprocess(self, args: List[str]):
-        log.debug(f"Opening subprocess: {args!r}")
+        log.debug(f"Opening subprocess: {args!r}{f', env: {self.env!r}' if self.env else ''}")
+
+        environ = dict(os.environ)
+        environ.update(self.env)
 
         # Force bufsize=0 on all Python versions to avoid writing the
         # unflushed buffer when closing a broken input pipe
         self.player = subprocess.Popen(
             args,
             bufsize=0,
+            env=environ,
             stdin=self.stdin,
             stdout=self.stdout,
             stderr=self.stderr,

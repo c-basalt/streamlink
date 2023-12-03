@@ -2,6 +2,8 @@
 $description South Korean live-streaming platform for individual live streams.
 $url pandalive.co.kr
 $type live
+$metadata author
+$metadata title
 """
 
 import logging
@@ -16,7 +18,7 @@ log = logging.getLogger(__name__)
 
 
 @pluginmatcher(re.compile(
-    r"https?://(?:www\.)?pandalive\.co\.kr/",
+    r"https?://(?:www\.)?pandalive\.co\.kr/live/play/[^/]+",
 ))
 class Pandalive(Plugin):
     def _get_streams(self):
@@ -32,10 +34,14 @@ class Pandalive(Plugin):
 
         json = self.session.http.post(
             "https://api.pandalive.co.kr/v1/live/play",
+            headers={
+                "Referer": self.url,
+            },
             data={
                 "action": "watch",
                 "userId": media_code,
             },
+            acceptable_status=(200, 400),
             schema=validate.Schema(
                 validate.parse_json(),
                 validate.any(
@@ -90,7 +96,7 @@ class Pandalive(Plugin):
         playlist = json["PlayList"]
         for key in ("hls", "hls2", "hls3"):
             # use the first available HLS stream
-            if key in playlist and playlist[key]:
+            if playlist.get(key):
                 # all stream qualities share the same URL, so just use the first one
                 return HLSStream.parse_variant_playlist(self.session, playlist[key][0]["url"])
 

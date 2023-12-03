@@ -4,8 +4,6 @@ set -e
 
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || realpath "$(dirname "$(readlink -f "${0}")")/..")
-
-VERSION=$(python setup.py --version)
 DIST=${STREAMLINK_DIST_DIR:-"${ROOT}/dist"}
 
 WHEEL_PLATFORMS=("win32" "win-amd64")
@@ -33,15 +31,30 @@ err() {
 # ----
 
 
-if ! python -m pip -q show "build"; then
-    err "Missing python package: build"
-fi
+pushd "${ROOT}"
 
+
+check_deps() {
+    local dep
+    for dep in build wheel versioningit; do
+        if ! python -m pip -q show "${dep}"; then
+            err "Missing python package: ${dep}"
+        fi
+    done
+}
+
+get_version() {
+    log "Reading version string"
+    VERSION=$(python -m versioningit)
+}
 
 build() {
+    mkdir -p "${DIST}"
+
     log "Building Streamlink sdist and generic wheel"
     python -m build --outdir "${DIST}" --sdist --wheel
 
+    # see custom build-system override in pyproject.toml
     for platform in "${WHEEL_PLATFORMS[@]}"; do
         log "Building Streamlink platform-specific wheel for ${platform}"
         python -m build --outdir "${DIST}" --wheel --config-setting="--build-option=--plat-name=${platform}"
@@ -78,6 +91,7 @@ sign() {
 }
 
 
-mkdir -p "${DIST}"
+check_deps
+get_version
 build
 sign

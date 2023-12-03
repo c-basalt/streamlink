@@ -170,7 +170,7 @@ def capturewarnings(capture=False):
 
     if capture:
         if _showwarning_default is None:
-            _showwarning_default = warnings.showwarning  # noqa: PLW0603
+            _showwarning_default = warnings.showwarning
             warnings.showwarning = _showwarning
     else:
         if _showwarning_default is not None:
@@ -193,7 +193,7 @@ def basicConfig(
     with _config_lock:
         handler: logging.StreamHandler
         if filename is not None:
-            handler = logging.FileHandler(filename, filemode)
+            handler = logging.FileHandler(filename, filemode, encoding="utf-8")
         else:
             handler = logging.StreamHandler(stream)
 

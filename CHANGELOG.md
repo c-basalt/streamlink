@@ -1,5 +1,126 @@
 # Changelog
 
+## streamlink 6.4.2 (2023-11-28)
+
+Patch release:
+
+- Fixed: HLS segment maps being written to the output multiple times ([#5689](https://github.com/streamlink/streamlink/pull/5689))
+- Fixed plugins:
+  - bilibili: rewritten plugin ([#5693](https://github.com/streamlink/streamlink/pull/5693))
+  - piczel: updated HLS URLs ([#5690](https://github.com/streamlink/streamlink/pull/5690))
+  - ssh101: fixed stream URL retrieval ([#5686](https://github.com/streamlink/streamlink/pull/5686))
+- Docs: added missing `Cache` API docs ([#5688](https://github.com/streamlink/streamlink/pull/5688))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.4.1...6.4.2)
+
+
+## streamlink 6.4.1 (2023-11-22)
+
+Patch release:
+
+- Fixed: libxml2 2.12.0 compatibility ([#5682](https://github.com/streamlink/streamlink/pull/5682))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.4.0...6.4.1)
+
+
+## streamlink 6.4.0 (2023-11-21)
+
+Release highlights:
+
+- Added: missing support for dynamic DASH manifests with `SegmentList`s ([#5654](https://github.com/streamlink/streamlink/pull/5654), [#5657](https://github.com/streamlink/streamlink/pull/5657))
+- Added: warning log message when skipping DASH segments between manifest reloads ([#5659](https://github.com/streamlink/streamlink/pull/5659))
+- Added plugins: nasaplus ([#5664](https://github.com/streamlink/streamlink/pull/5664))
+- Updated plugins:
+  - raiplay: added VOD support with authentication `--raiplay-email` / `--raiplay-password` / `--raiplay-purge-credentials` ([#5662](https://github.com/streamlink/streamlink/pull/5662))
+  - telemadrid: fixed XPath query ([#5653](https://github.com/streamlink/streamlink/pull/5653))
+  - tvp: fixed tvp.info ([#5645](https://github.com/streamlink/streamlink/pull/5645))
+  - youtube: fixed video ID retrieval ([#5673](https://github.com/streamlink/streamlink/pull/5673))
+- Docs: added validation schema API docs and API guide ([#5652](https://github.com/streamlink/streamlink/pull/5652), [#5655](https://github.com/streamlink/streamlink/pull/5655))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.3.1...6.4.0)
+
+
+## streamlink 6.3.1 (2023-10-26)
+
+Patch release:
+
+- Fixed plugins:
+  - welt: rewritten plugin ([#5637](https://github.com/streamlink/streamlink/pull/5637))
+- Build: fixed tests when running from sdist ([#5636](https://github.com/streamlink/streamlink/pull/5636))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.3.0...6.3.1)
+
+
+## streamlink 6.3.0 (2023-10-25)
+
+Release highlights:
+
+- Added: warning log message when skipping HLS segments between playlist reloads ([#5607](https://github.com/streamlink/streamlink/pull/5607))
+- Refactored: internals of segmented stream implementations (base classes, HLS, DASH)
+  - Added: base `Segment` dataclass and made segmented streams inherit from it ([#5594](https://github.com/streamlink/streamlink/pull/5594))
+  - Moved: modules into sub-packages (import paths of public APIs remain the same) ([#5593](https://github.com/streamlink/streamlink/pull/5593))
+  - Renamed: various non-public HLS class methods/attributes and functions ([#5526](https://github.com/streamlink/streamlink/pull/5526))
+  - Removed: `Sequence` segment wrapper from HLS implementation ([#5526](https://github.com/streamlink/streamlink/pull/5526))
+- Fixed: DASH manifest not respecting the `minBufferTime` ([#5610](https://github.com/streamlink/streamlink/pull/5610))
+- Fixed: URL matchers of HLS/DASH protocol plugins ([#5616](https://github.com/streamlink/streamlink/pull/5616), [#5617](https://github.com/streamlink/streamlink/pull/5617))
+- Fixed: bandwidth parsing issue in HLS multivariant playlists ([#5619](https://github.com/streamlink/streamlink/pull/5619))
+- Fixed plugins:
+  - dlive: fixed live streams and fixed VODs ([#5622](https://github.com/streamlink/streamlink/pull/5622), [#5623](https://github.com/streamlink/streamlink/pull/5623))
+  - goodgame: rewritten plugin using goodgame API v4 ([#5586](https://github.com/streamlink/streamlink/pull/5586), [#5597](https://github.com/streamlink/streamlink/pull/5597))
+  - mitele: updated gbx API calls from v2 to v3 ([#5624](https://github.com/streamlink/streamlink/pull/5624))
+  - twitch: fixed error handling of geo-restricted or inaccessible streams ([#5591](https://github.com/streamlink/streamlink/pull/5591))
+- Removed plugins:
+  - ntv: static stream URLs ([#5604](https://github.com/streamlink/streamlink/pull/5604))
+  - vlive: offline ([#5599](https://github.com/streamlink/streamlink/pull/5599))
+- Build: dropped `versioningit` build-requirement when building from sdist tarball (version string has always been built-in while `versioningit` performed a no-op) ([#5632](https://github.com/streamlink/streamlink/pull/5632))
+- Packaging: added missing shell completions build-script to sdist ([#5625](https://github.com/streamlink/streamlink/pull/5625))
+- Docs: clarified section about building from source (sdist/git vs. GitHub tarballs) ([#5633](https://github.com/streamlink/streamlink/pull/5633))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.2.1...6.3.0)
+
+
+## streamlink 6.2.1 (2023-10-03)
+
+Patch release:
+
+- Added: official support for Python 3.12 ([#5576](https://github.com/streamlink/streamlink/pull/5576))
+- Fixed plugins: goodgame ([#5557](https://github.com/streamlink/streamlink/pull/5557)), nos ([#5565](https://github.com/streamlink/streamlink/pull/5565)), pandalive ([#5569](https://github.com/streamlink/streamlink/pull/5569)), wwenetwork ([#5559](https://github.com/streamlink/streamlink/pull/5559))
+- Build: added custom setuptools build-backend override which fixes issues with building Windows-specific wheels ([#5558](https://github.com/streamlink/streamlink/pull/5558))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.2.0...6.2.1)
+
+
+## streamlink 6.2.0 (2023-09-14)
+
+Release highlights:
+
+- Added: `--player-env` CLI argument ([#5535](https://github.com/streamlink/streamlink/pull/5535))
+- Added: OpenSSL version to debug log output ([#5506](https://github.com/streamlink/streamlink/pull/5506))
+- Updated: segmented stream internals and typing ([#5504](https://github.com/streamlink/streamlink/pull/5504), [#5507](https://github.com/streamlink/streamlink/pull/5507))
+- Updated: internal HLS tag parsing setup and parser state ([#5513](https://github.com/streamlink/streamlink/pull/5513), [#5521](https://github.com/streamlink/streamlink/pull/5521))
+- Fixed: HLS streams not ending on playlist reload with endlist tag and no new segments ([#5538](https://github.com/streamlink/streamlink/pull/5538))
+- Fixed: missing file encoding when writing a log file ([#5532](https://github.com/streamlink/streamlink/pull/5532))
+- Added plugins: piaulizaportal ([#5508](https://github.com/streamlink/streamlink/pull/5508))
+- Fixed plugins: hiplayer ([#5534](https://github.com/streamlink/streamlink/pull/5534)), nicolive ([#5529](https://github.com/streamlink/streamlink/pull/5529)), pluto ([#5551](https://github.com/streamlink/streamlink/pull/5551))
+- Docs: added list of supported metadata variables for each plugin ([#5517](https://github.com/streamlink/streamlink/pull/5517), [#5519](https://github.com/streamlink/streamlink/pull/5519))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.1.0...6.2.0)
+
+
+## streamlink 6.1.0 (2023-08-16)
+
+Release highlights:
+
+- Added: `--hls-segment-queue-threshold` for being able to configure when to stop HLS streams early on missing segments ([#5478](https://github.com/streamlink/streamlink/pull/5478))
+- Fixed: config file parsing issues and made parsing argument values more strict ([#5484](https://github.com/streamlink/streamlink/pull/5484))
+- Fixed: race condition when reading and validating the FFmpeg version string ([#5480](https://github.com/streamlink/streamlink/pull/5480))
+- Fixed plugins: atresplayer ([#5477](https://github.com/streamlink/streamlink/pull/5477))
+- Docs: added code examples for the [removal of `Streamlink.{g,s}et_plugin_option`](https://streamlink.github.io/migrations.html#streamlink-g-s-et-plugin-option) ([#5497](https://github.com/streamlink/streamlink/pull/5497))
+- Build: fixed entry-points config issues with setuptools `68.1.0` ([#5500](https://github.com/streamlink/streamlink/pull/5500))
+
+[Full changelog](https://github.com/streamlink/streamlink/compare/6.0.1...6.1.0)
+
+
 ## streamlink 6.0.1 (2023-08-02)
 
 Patch release:

@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: File permissions
         run: "! grep -Ev '^644' <(git ls-files src/ tests/ | xargs stat '--format=%a %n')"
       - name: File encodings
@@ -24,12 +24,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: ./script/install-dependencies.sh
+      - name: Install Python dependencies
+        run: >
+          python -m pip install -U
+          -e .
+          -r dev-requirements.txt
       - name: ruff
         run: >
           python -m ruff .
@@ -39,14 +42,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: |
-          ./script/install-dependencies.sh
-          python -m pip install -r docs-requirements.txt
+      - name: Install Python dependencies
+        run: >
+          python -m pip install -U
+          -e .
+          -r dev-requirements.txt
+          -r docs-requirements.txt
       - name: mypy
         run: |
           python -m mypy --no-incremental

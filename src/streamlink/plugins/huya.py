@@ -2,6 +2,9 @@
 $description Chinese live-streaming platform for live video game broadcasts and individual live streams.
 $url huya.com
 $type live
+$metadata id
+$metadata author
+$metadata title
 """
 
 import base64
@@ -67,7 +70,7 @@ class Huya(Plugin):
                                 "sStreamName": str,
                                 "sFlvUrl": str,
                                 "sFlvUrlSuffix": str,
-                                "sFlvAntiCode": validate.all(str, validate.transform(lambda v: html_unescape(v))),
+                                "sFlvAntiCode": validate.all(str, validate.transform(html_unescape)),
                             },
                             validate.union_get(
                                 "sCdnType",

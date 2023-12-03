@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, call, patch
 
@@ -137,7 +138,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
             custom=None,
         )
 
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [daterange, Segment(0), Segment(1)], end=True),
         ], streamoptions={"disable_ads": True, "low_latency": False})
 
@@ -155,7 +156,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
             custom=None,
         )
 
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [daterange, Segment(0), Segment(1)], end=True),
         ], streamoptions={"disable_ads": True, "low_latency": False})
 
@@ -173,7 +174,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
             custom=None,
         )
 
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [daterange, Segment(0), Segment(1)], end=True),
         ], streamoptions={"disable_ads": True, "low_latency": False})
 
@@ -191,7 +192,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
             custom={"X-TV-TWITCH-AD-URL": "/"},
         )
 
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [daterange, Segment(0), Segment(1)], end=True),
         ], streamoptions={"disable_ads": True, "low_latency": False})
 
@@ -203,7 +204,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
     @patch("streamlink.plugins.twitch.log")
     def test_hls_disable_ads_has_preroll(self, mock_log):
         daterange = TagDateRangeAd(duration=4)
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [daterange, Segment(0), Segment(1)]),
             Playlist(2, [daterange, Segment(2), Segment(3)]),
             Playlist(4, [Segment(4), Segment(5)], end=True),
@@ -221,7 +222,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
     @patch("streamlink.plugins.twitch.log")
     def test_hls_disable_ads_has_midstream(self, mock_log):
         daterange = TagDateRangeAd(start=DATETIME_BASE + timedelta(seconds=2), duration=2)
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [Segment(0), Segment(1)]),
             Playlist(2, [daterange, Segment(2), Segment(3)]),
             Playlist(4, [Segment(4), Segment(5)], end=True),
@@ -238,7 +239,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
     @patch("streamlink.plugins.twitch.log")
     def test_hls_no_disable_ads_has_preroll(self, mock_log):
         daterange = TagDateRangeAd(duration=2)
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [daterange, Segment(0), Segment(1)]),
             Playlist(2, [Segment(2), Segment(3)], end=True),
         ], streamoptions={"disable_ads": False, "low_latency": False})
@@ -251,7 +252,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
 
     @patch("streamlink.plugins.twitch.log")
     def test_hls_low_latency_has_prefetch(self, mock_log):
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [Segment(0), Segment(1), Segment(2), Segment(3), SegmentPrefetch(4), SegmentPrefetch(5)]),
             Playlist(4, [Segment(4), Segment(5), Segment(6), Segment(7), SegmentPrefetch(8), SegmentPrefetch(9)], end=True),
         ], streamoptions={"disable_ads": False, "low_latency": True})
@@ -270,7 +271,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
 
     @patch("streamlink.plugins.twitch.log")
     def test_hls_no_low_latency_has_prefetch(self, mock_log):
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [Segment(0), Segment(1), Segment(2), Segment(3), SegmentPrefetch(4), SegmentPrefetch(5)]),
             Playlist(4, [Segment(4), Segment(5), Segment(6), Segment(7), SegmentPrefetch(8), SegmentPrefetch(9)], end=True),
         ], streamoptions={"disable_ads": False, "low_latency": False})
@@ -305,7 +306,7 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
     @patch("streamlink.plugins.twitch.log")
     def test_hls_low_latency_has_prefetch_has_preroll(self, mock_log):
         daterange = TagDateRangeAd(duration=4)
-        thread, segments = self.subject([
+        segments = self.subject([
             Playlist(0, [daterange, Segment(0), Segment(1), Segment(2), Segment(3)]),
             Playlist(4, [Segment(4), Segment(5), Segment(6), Segment(7), SegmentPrefetch(8), SegmentPrefetch(9)], end=True),
         ], streamoptions={"disable_ads": False, "low_latency": True})
@@ -343,19 +344,19 @@ class TestTwitchHLSStream(TestMixinStreamHLS, unittest.TestCase):
             TagDateRangeAd(start=DATETIME_BASE + timedelta(seconds=3), duration=4),
         ]
         # noinspection PyTypeChecker
-        thread, segments = self.subject([
+        segments = self.subject([
             # regular stream data with prefetch segments
             Playlist(0, [Seg(0), Seg(1, duration=0.5), Pre(2), Pre(3)]),
             # three prefetch segments, one regular (2) and two ads (3 and 4)
-            Playlist(1, [Seg(1, duration=0.5), Pre(2)] + ads + [Pre(3), Pre(4)]),
+            Playlist(1, [Seg(1, duration=0.5), Pre(2), *ads, Pre(3), Pre(4)]),
             # all prefetch segments are gone once regular prefetch segments have shifted
-            Playlist(2, [Seg(2, duration=1.5)] + ads + [Seg(3), Seg(4), Seg(5)]),
+            Playlist(2, [Seg(2, duration=1.5), *ads, Seg(3), Seg(4), Seg(5)]),
             # still no prefetch segments while ads are playing
-            Playlist(3, ads + [Seg(3), Seg(4), Seg(5), Seg(6)]),
+            Playlist(3, [*ads, Seg(3), Seg(4), Seg(5), Seg(6)]),
             # new prefetch segments on the first regular segment occurrence
-            Playlist(4, ads + [Seg(4), Seg(5), Seg(6), Seg(7), Pre(8), Pre(9)]),
-            Playlist(5, ads + [Seg(5), Seg(6), Seg(7), Seg(8), Pre(9), Pre(10)]),
-            Playlist(6, ads + [Seg(6), Seg(7), Seg(8), Seg(9), Pre(10), Pre(11)]),
+            Playlist(4, [*ads, Seg(4), Seg(5), Seg(6), Seg(7), Pre(8), Pre(9)]),
+            Playlist(5, [*ads, Seg(5), Seg(6), Seg(7), Seg(8), Pre(9), Pre(10)]),
+            Playlist(6, [*ads, Seg(6), Seg(7), Seg(8), Seg(9), Pre(10), Pre(11)]),
             Playlist(7, [Seg(7), Seg(8), Seg(9), Seg(10), Pre(11), Pre(12)], end=True),
         ], streamoptions={"disable_ads": True, "low_latency": True})
 
@@ -583,6 +584,60 @@ class TestTwitchAPIAccessToken:
         assert headers["Authorization"] == "OAuth invalid-token"
         assert headers["Device-Id"] == "device-id"
         assert headers["Client-Integrity"] == "client-integrity-token"
+
+
+class TestTwitchHLSMultivariantResponse:
+    @pytest.fixture()
+    def plugin(self, request: pytest.FixtureRequest, requests_mock: rm.Mocker, session: Streamlink):
+        requests_mock.get("mock://multivariant", **getattr(request, "param", {}))
+        return Twitch(session, "https://twitch.tv/channelname")
+
+    @pytest.mark.parametrize(("plugin", "raises", "streams", "log"), [
+        pytest.param(
+            {"text": "#EXTM3U\n"},
+            nullcontext(),
+            {},
+            [],
+            id="success",
+        ),
+        pytest.param(
+            {"text": "Not an HLS playlist"},
+            pytest.raises(PluginError),
+            {},
+            [],
+            id="invalid HLS playlist",
+        ),
+        pytest.param(
+            {
+                "status_code": 403,
+                "json": [{
+                    "url": "mock://multivariant",
+                    "error": "Content Restricted In Region",
+                    "error_code": "content_geoblocked",
+                    "type": "error",
+                }],
+            },
+            nullcontext(),
+            None,
+            [("streamlink.plugins.twitch", "error", "Content Restricted In Region")],
+            id="geo restriction",
+        ),
+        pytest.param(
+            {
+                "status_code": 404,
+                "text": "Not found",
+            },
+            nullcontext(),
+            None,
+            [("streamlink.plugins.twitch", "error", "Could not access HLS playlist")],
+            id="non-json error response",
+        ),
+    ], indirect=["plugin"])
+    def test_multivariant_response(self, caplog: pytest.LogCaptureFixture, plugin: Twitch, raises, streams, log):
+        caplog.set_level("error", "streamlink.plugins.twitch")
+        with raises:
+            assert plugin._get_hls_streams("mock://multivariant", []) == streams
+        assert [(record.name, record.levelname, record.message) for record in caplog.records] == log
 
 
 class TestTwitchMetadata:
