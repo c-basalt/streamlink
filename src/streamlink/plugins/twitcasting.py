@@ -23,6 +23,12 @@ from streamlink.utils.url import update_qsd
 log = logging.getLogger(__name__)
 
 
+def match_or_none(pattern, text):
+    m = re.search(pattern, text)
+    if m:
+        return m[1].strip()
+
+
 @pluginmatcher(re.compile(
     r"https?://twitcasting\.tv/(?P<channel>[^/]+)",
 ))
@@ -125,6 +131,11 @@ class TwitCasting(Plugin):
             return
 
         self.id = movie.get("id")
+
+        webpage = self.session.http.get(f'https://twitcasting.tv/{self.match["channel"]}').text
+
+        self.title = match_or_none(r'<meta\s+\bproperty="og:title"[^>]+\bcontent="([^"]+)"/>', webpage)
+        self.author = match_or_none(r'<span class="tw-user-nav-name">([^<]+)', webpage)
 
         if websocket:
             yield from self._get_streams_websocket(websocket)
