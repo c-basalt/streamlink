@@ -70,11 +70,11 @@ class RPlayLive(Plugin):
         if stream_state == 'offline':
             raise PluginError("The live stream is offline")
         elif stream_state != 'live':
-            raise PluginError(f"The live stream is on alternative site: {stream_state}")
+            raise PluginError(f"The live stream is going on alternative site: {stream_state}")
 
         r = self.session.http.get('https://api.rplay.live/live/key2',
                                   headers={'Authorization': self.options.get("token")},
-                                  params={'requestorOid': self.options.get("oid"), 'loginType': 'plex'})
+                                  params={'requestorOid': self.options.get("oid"), 'loginType': 'plax'})
         if r.status_code != 200:
             raise PluginError("Failed to get live key")
         key2 = r.text
