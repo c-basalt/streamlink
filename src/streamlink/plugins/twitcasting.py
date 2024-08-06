@@ -137,10 +137,10 @@ class TwitCasting(Plugin):
         self.title = match_or_none(r'<meta\s+\bproperty="og:title"[^>]+\bcontent="([^"]+)"/>', webpage)
         self.author = match_or_none(r'<span class="tw-user-nav-name">([^<]+)', webpage)
 
-        if websocket:
-            yield from self._get_streams_websocket(websocket)
         if hls:
             yield from self._get_streams_hls(hls)
+        elif websocket:
+            yield from self._get_streams_websocket(websocket)
 
 
 class TwitCastingWsClient(WebsocketClient):
