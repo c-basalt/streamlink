@@ -77,7 +77,7 @@ class RPlayLive(Plugin):
                                   params={'requestorOid': self.options.get("oid"), 'loginType': 'plax'})
         if r.status_code != 200:
             raise PluginError("Failed to get live key")
-        key2 = r.text
+        key2 = r.json()['authKey']
 
         streams = HLSStream.parse_variant_playlist(
             self.session, f'https://api.rplay.live/live/stream/playlist.m3u8?creatorOid={self.user_id}&key2={key2}')
