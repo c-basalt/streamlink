@@ -1,3 +1,5 @@
+# ruff: noqa: RUF067
+
 import json
 from datetime import datetime as _datetime
 
@@ -6,20 +8,21 @@ from streamlink_cli.utils.player import find_default_player
 
 
 __all__ = [
-    "Formatter", "JSONEncoder",
+    "Formatter",
+    "JSONEncoder",
     "datetime",
     "find_default_player",
 ]
 
 
 class JSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if hasattr(obj, "__json__"):
-            return obj.__json__()
-        elif isinstance(obj, bytes):
-            return obj.decode("utf8", "ignore")
+    def default(self, o):
+        if hasattr(o, "__json__"):
+            return o.__json__()
+        elif isinstance(o, bytes):
+            return o.decode("utf8", "ignore")
         else:
-            return json.JSONEncoder.default(self, obj)
+            return json.JSONEncoder.default(self, o)
 
 
 # noinspection PyPep8Naming

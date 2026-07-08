@@ -7,22 +7,22 @@ $metadata title
 $region Vietnam
 """
 
-import logging
 import re
 from datetime import datetime, timezone
 from hashlib import md5
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://(?:www\.)?thvli\.vn/live/(?P<channel>[^/]+)",
-))
+@pluginmatcher(
+    re.compile(r"https?://(?:www\.)?thvli\.vn/live/(?P<channel>[^/]+)"),
+)
 class VinhLongTV(Plugin):
     _API_URL = "https://api.thvli.vn/backend/cm/get_detail/{channel}/"
     _API_KEY_DATE = "Kh0ngDuLieu"

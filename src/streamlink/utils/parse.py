@@ -1,11 +1,12 @@
 import json
 import re
+from typing import Any
 from urllib.parse import parse_qsl
 
 from lxml.etree import HTML, XML
 
 from streamlink.compat import detect_encoding
-from streamlink.plugin import PluginError
+from streamlink.exceptions import PluginError
 
 
 def _parse(parser, data, name, exception, schema, *args, **kwargs):
@@ -29,7 +30,8 @@ def parse_json(
     name="JSON",
     exception=PluginError,
     schema=None,
-    *args, **kwargs,
+    *args,
+    **kwargs,
 ):
     """Wrapper around json.loads.
 
@@ -44,8 +46,9 @@ def parse_html(
     name="HTML",
     exception=PluginError,
     schema=None,
-    *args, **kwargs,
-):
+    *args,
+    **kwargs,
+) -> Any:
     """Wrapper around lxml.etree.HTML with some extras.
 
     Provides these extra features:
@@ -58,12 +61,14 @@ def parse_html(
         if is_bytes:
             # get the document's encoding using the "encoding" attribute value of the XML text declaration
             match = re.match(rb"^\s*<\?xml\s.*?encoding=(?P<q>[\'\"])(?P<encoding>.+?)(?P=q).*?\?>", data, re.IGNORECASE)
-            if match:
-                encoding_value = detect_encoding(match["encoding"])["encoding"]
-                encoding = match["encoding"].decode(encoding_value)
+            if match and (encoding_value := detect_encoding(match["encoding"])["encoding"]):
+                encoding: str | None = match["encoding"].decode(encoding_value)
             else:
                 # no "encoding" attribute: try to figure out encoding from the document's content
                 encoding = detect_encoding(data)["encoding"]
+
+            if not encoding:
+                raise exception(f"Unable to detect encoding of {name} payload")
 
             data = data.decode(encoding)
 
@@ -79,7 +84,8 @@ def parse_xml(
     name="XML",
     exception=PluginError,
     schema=None,
-    *args, **kwargs,
+    *args,
+    **kwargs,
 ):
     """Wrapper around lxml.etree.XML with some extras.
 
@@ -91,9 +97,9 @@ def parse_xml(
     if isinstance(data, str):
         data = bytes(data, "utf8")
     if ignore_ns:
-        data = re.sub(br"\s+xmlns=\"(.+?)\"", b"", data)
+        data = re.sub(rb"\s+xmlns=\"(.+?)\"", b"", data)
     if invalid_char_entities:
-        data = re.sub(br"&(?!(?:#(?:[0-9]+|[Xx][0-9A-Fa-f]+)|[A-Za-z0-9]+);)", b"&amp;", data)
+        data = re.sub(rb"&(?!(?:#(?:[0-9]+|[Xx][0-9A-Fa-f]+)|[A-Za-z0-9]+);)", b"&amp;", data)
 
     return _parse(XML, data, name, exception, schema, *args, **kwargs)
 
@@ -103,7 +109,8 @@ def parse_qsd(
     name="query string",
     exception=PluginError,
     schema=None,
-    *args, **kwargs,
+    *args,
+    **kwargs,
 ):
     """Parses a query string into a dict.
 

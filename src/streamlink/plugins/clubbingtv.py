@@ -5,19 +5,19 @@ $type live, vod
 $account Login required
 """
 
-import logging
 import re
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://(www\.)?clubbingtv\.com/",
-))
+@pluginmatcher(
+    re.compile(r"https?://(www\.)?clubbingtv\.com/"),
+)
 @pluginargument(
     "username",
     required=True,
@@ -71,7 +71,7 @@ class ClubbingTV(Plugin):
 
         stream_url = match.group("stream_url")
         log.info(
-            "Fetching external stream from URL {0}".format(stream_url),
+            f"Fetching external stream from URL {stream_url}",
         )
         return self.session.streams(stream_url)
 

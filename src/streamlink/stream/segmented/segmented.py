@@ -1,25 +1,29 @@
 from __future__ import annotations
 
-import logging
 import queue
 from concurrent import futures
-from concurrent.futures import Future
-from threading import Event, Thread, current_thread
-from typing import ClassVar, Generator, Generic, Optional, Tuple, Type, TypeVar
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from threading import Event, current_thread
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeAlias, TypeVar
 
 from streamlink.buffers import RingBuffer
-from streamlink.stream.segmented.concurrent import ThreadPoolExecutor
+from streamlink.logger import getLogger
 from streamlink.stream.segmented.segment import Segment
-from streamlink.stream.stream import Stream, StreamIO
+from streamlink.stream.stream import StreamIO
+from streamlink.utils.thread import NamedThread
+from streamlink.utils.times import now
 
 
-try:
-    from typing import TypeAlias  # type: ignore[attr-defined]
-except ImportError:  # pragma: no cover
-    from typing_extensions import TypeAlias
+if TYPE_CHECKING:
+    from collections.abc import Generator
+    from concurrent.futures import Future
+    from datetime import datetime
+
+    from streamlink.stream.stream import Stream
 
 
-log = logging.getLogger(".".join(__name__.split(".")[:-1]))
+log = getLogger(".".join(__name__.split(".")[:-1]))
 
 
 class AwaitableMixin:
@@ -37,11 +41,13 @@ class AwaitableMixin:
 
 TSegment = TypeVar("TSegment", bound=Segment)
 TResult = TypeVar("TResult")
-TResultFuture: TypeAlias = "Future[Optional[TResult]]"
-TQueueItem: TypeAlias = Optional[Tuple[TSegment, TResultFuture, Tuple]]
+
+if TYPE_CHECKING:
+    TResultFuture: TypeAlias = Future[TResult | None]
+    TQueueItem: TypeAlias = tuple[TSegment, TResultFuture, tuple]
 
 
-class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
+class SegmentedStreamWriter(AwaitableMixin, NamedThread, Generic[TSegment, TResult]):
     """
     The base writer thread.
     This thread is responsible for fetching segments, processing them and finally writing the data to the buffer.
@@ -54,11 +60,12 @@ class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
         self,
         reader: SegmentedStreamReader,
         size: int = 20,
-        retries: Optional[int] = None,
-        threads: Optional[int] = None,
-        timeout: Optional[float] = None,
+        retries: int | None = None,
+        threads: int | None = None,
+        timeout: float | None = None,
+        name: str | None = None,
     ) -> None:
-        super().__init__(daemon=True, name=f"Thread-{self.__class__.__name__}")
+        super().__init__(daemon=True, name=name)
 
         self.closed = False
 
@@ -70,8 +77,8 @@ class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
         self.threads = threads or self.session.options.get("stream-segment-threads")
         self.timeout = timeout or self.session.options.get("stream-segment-timeout")
 
-        self.executor = ThreadPoolExecutor(max_workers=self.threads)
-        self._queue: queue.Queue[TQueueItem] = queue.Queue(size)
+        self.executor = ThreadPoolExecutor(max_workers=self.threads, thread_name_prefix=f"{self.name}-executor")
+        self._queue: queue.Queue[TQueueItem | None] = queue.Queue(size)
 
     def close(self) -> None:
         """
@@ -89,7 +96,7 @@ class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
         self.reader.close()
         self.executor.shutdown(wait=True, cancel_futures=True)
 
-    def put(self, segment: Optional[TSegment]) -> None:
+    def put(self, segment: TSegment | None) -> None:
         """
         Adds a segment to the download pool and write queue.
         """
@@ -97,7 +104,7 @@ class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
         if self.closed:  # pragma: no cover
             return
 
-        future: Optional[TResultFuture]
+        future: TResultFuture | None
         if segment is None:
             future = None
         else:
@@ -105,7 +112,7 @@ class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
 
         self.queue(segment, future)
 
-    def queue(self, segment: Optional[TSegment], future: Optional[TResultFuture], *data) -> None:
+    def queue(self, segment: TSegment | None, future: TResultFuture | None, *data) -> None:
         """
         Puts values into a queue but aborts if this thread is closed.
         """
@@ -118,17 +125,17 @@ class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
             except queue.Full:  # pragma: no cover
                 continue
 
-    def _queue_put(self, item: TQueueItem) -> None:
+    def _queue_put(self, item: TQueueItem | None) -> None:
         self._queue.put(item, block=True, timeout=1)
 
-    def _queue_get(self) -> TQueueItem:
+    def _queue_get(self) -> TQueueItem | None:
         return self._queue.get(block=True, timeout=0.5)
 
     @staticmethod
-    def _future_result(future: TResultFuture) -> Optional[TResult]:
+    def _future_result(future: TResultFuture) -> TResult | None:
         return future.result(timeout=0.5)
 
-    def fetch(self, segment: TSegment) -> Optional[TResult]:
+    def fetch(self, segment: TSegment) -> TResult | None:
         """
         Fetches a segment.
         Should be overridden by the inheriting class.
@@ -168,7 +175,7 @@ class SegmentedStreamWriter(AwaitableMixin, Thread, Generic[TSegment, TResult]):
         self.close()
 
 
-class SegmentedStreamWorker(AwaitableMixin, Thread, Generic[TSegment, TResult]):
+class SegmentedStreamWorker(AwaitableMixin, NamedThread, Generic[TSegment, TResult]):
     """
     The base worker thread.
     This thread is responsible for queueing up segments in the writer thread.
@@ -178,8 +185,10 @@ class SegmentedStreamWorker(AwaitableMixin, Thread, Generic[TSegment, TResult]):
     writer: SegmentedStreamWriter[TSegment, TResult]
     stream: Stream
 
-    def __init__(self, reader: SegmentedStreamReader, **kwargs) -> None:
-        super().__init__(daemon=True, name=f"Thread-{self.__class__.__name__}")
+    _QUEUE_DEADLINE_MIN = 5.0
+
+    def __init__(self, reader: SegmentedStreamReader, name: str | None = None, **kwargs) -> None:
+        super().__init__(daemon=True, name=name)
 
         self.closed = False
 
@@ -187,6 +196,13 @@ class SegmentedStreamWorker(AwaitableMixin, Thread, Generic[TSegment, TResult]):
         self.writer = reader.writer
         self.stream = reader.stream
         self.session = reader.session
+
+        self.sequence: int = -1
+        self.duration: float = 0.0
+        self.duration_limit: float = self.session.options.get("stream-segmented-duration")
+
+        self._queue_deadline_factor: float = self.session.options.get("stream-segmented-queue-deadline")
+        self._queue_last: datetime = now()
 
     def close(self) -> None:
         """
@@ -201,21 +217,88 @@ class SegmentedStreamWorker(AwaitableMixin, Thread, Generic[TSegment, TResult]):
         self.closed = True
         self._wait.set()
 
-    def iter_segments(self) -> Generator[TSegment, None, None]:
+    @property
+    def _queue_deadline_wait(self) -> float:  # pragma: no cover
+        """
+        The max time in seconds to wait for new segments while fetching data in a polling implementation.
+        Will be multiplied by the ``stream-segmented-queue-deadline`` session option in the queue deadline check.
+        Needs to be overridden by subclasses which intent to support queue deadlines.
+        """
+        return 0.0
+
+    def check_queue_deadline(self, queued: bool) -> bool:
+        """
+        Check whether new segments were queued in a specific time frame during the current iteration of resource fetching,
+        so the stream can be stopped early. Should be called in a subclass's ``iter_segments()`` after fetching data.
+        :return: True if the stream should be stopped early, False otherwise.
+        """
+
+        if queued:
+            self._queue_last = now()
+            return False
+
+        deadline = max(0.0, self._queue_deadline_wait) * self._queue_deadline_factor
+        if deadline <= 0.0:
+            return False
+
+        deadline = max(self._QUEUE_DEADLINE_MIN, deadline)
+        if now() <= self._queue_last + timedelta(seconds=deadline):
+            return False
+
+        log.warning(f"No new segments for more than {deadline:.2f}s. Stopping...")
+        return True
+
+    def check_sequence_gap(self, segment: TSegment) -> None:
+        size = segment.num - self.sequence
+        if size > 0:
+            if size > 1:
+                msg = f"Sequence gap of {size} segments at position {self.sequence}. "
+            else:
+                msg = f"Sequence gap of 1 segment at position {self.sequence}. "
+            warning = "This is unsupported and will result in incoherent output data."
+            log.warning(f"{msg}{warning}")
+
+    def iter_segments(self) -> Generator[TSegment, bool, None]:
         """
         The iterator that generates segments for the worker thread.
         Should be overridden by the inheriting class.
         """
 
         return
-        # noinspection PyUnreachableCode
-        yield
+        # noinspection PyUnreachableCode,PyTypeChecker
+        yield  # type: ignore[ty:invalid-yield]
 
     def run(self) -> None:
-        for segment in self.iter_segments():
-            if self.closed:  # pragma: no cover
-                break
-            self.writer.put(segment)
+        self._queue_last = now()
+
+        iter_segments = self.iter_segments()
+        queued: bool | None = None
+
+        try:  # noqa: PLW0717
+            while True:
+                if queued is None:
+                    segment = next(iter_segments)
+                else:
+                    segment = iter_segments.send(queued)
+
+                if self.closed:  # pragma: no cover
+                    break
+
+                log.debug("Queuing %r", segment)
+
+                self.check_sequence_gap(segment)
+
+                self.sequence = segment.num + 1
+                self.duration += segment.duration
+
+                self.writer.put(segment)
+                queued = True
+
+                if self.duration >= self.duration_limit > 0.0:
+                    log.info(f"Stopping stream early after {self.duration_limit:.2f}s")
+                    break
+        except StopIteration:
+            pass
 
         # End of stream, tells the writer to exit
         self.writer.put(None)
@@ -223,14 +306,14 @@ class SegmentedStreamWorker(AwaitableMixin, Thread, Generic[TSegment, TResult]):
 
 
 class SegmentedStreamReader(StreamIO, Generic[TSegment, TResult]):
-    __worker__: ClassVar[Type[SegmentedStreamWorker]] = SegmentedStreamWorker
-    __writer__: ClassVar[Type[SegmentedStreamWriter]] = SegmentedStreamWriter
+    __worker__: ClassVar[type[SegmentedStreamWorker]] = SegmentedStreamWorker
+    __writer__: ClassVar[type[SegmentedStreamWriter]] = SegmentedStreamWriter
 
     worker: SegmentedStreamWorker[TSegment, TResult]
     writer: SegmentedStreamWriter[TSegment, TResult]
     stream: Stream
 
-    def __init__(self, stream: Stream) -> None:
+    def __init__(self, stream: Stream, name: str | None = None) -> None:
         super().__init__()
 
         self.stream = stream
@@ -241,8 +324,8 @@ class SegmentedStreamReader(StreamIO, Generic[TSegment, TResult]):
         buffer_size = self.session.get_option("ringbuffer-size")
         self.buffer = RingBuffer(buffer_size)
 
-        self.writer = self.__writer__(self)
-        self.worker = self.__worker__(self)
+        self.writer = self.__writer__(self, name=name)
+        self.worker = self.__worker__(self, name=name)
 
     def open(self) -> None:
         self.writer.start()
@@ -254,9 +337,9 @@ class SegmentedStreamReader(StreamIO, Generic[TSegment, TResult]):
         self.buffer.close()
 
         current = current_thread()
-        if current is not self.worker:  # pragma: no branch
+        if current is not self.worker and self.worker.is_alive():  # pragma: no branch
             self.worker.join(timeout=self.timeout)
-        if current is not self.writer:  # pragma: no branch
+        if current is not self.writer and self.writer.is_alive():  # pragma: no branch
             self.writer.join(timeout=self.timeout)
 
         super().close()

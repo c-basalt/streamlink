@@ -12,11 +12,15 @@ from dataclasses import dataclass
 from os import getenv
 from pathlib import Path
 from pprint import pformat
-from typing import IO, Any, Literal, NewType, Optional
+from typing import IO, TYPE_CHECKING, Any, Literal, NewType
 
 # noinspection PyPackageRequirements
 import jinja2
 import requests
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator, Mapping
 
 
 log = logging.getLogger(__name__)
@@ -25,18 +29,26 @@ ROOT = Path(__file__).parents[1].resolve()
 DEFAULT_REPO = "streamlink/streamlink"
 
 
-RE_CHANGELOG = re.compile(r"""
-    ##\sstreamlink\s+
-    (?P<version>\d+\.\d+\.\d+(?:-\S+)?)\s+
-    \((?P<date>\d{4}-\d\d-\d\d)\)\n\n
-    (?P<changelog>.+?)\n\n
-    \[Full\schangelog]\(\S+\)\n+
-    (?=\#\#\sstreamlink|$)
-""", re.VERBOSE | re.DOTALL | re.IGNORECASE)
+RE_RELEASE_COMMIT_MESSAGE = re.compile(r"^release: (?P<version>\d+\.\d+\.\d+(?:-\S+)?)$")
+RE_CHANGELOG_DELIM = re.compile(r"\n## streamlink ")
+RE_CHANGELOG_CONTENT = re.compile(
+    r"""
+        ^
+        (?P<version>\d+\.\d+\.\d+(?:-\S+)?)\s
+        \((?P<date>\d{4}-\d\d-\d\d)\)\n\n
+        (?P<changelog>.+?)\n\n
+        \[Full\ changelog]\(\S+\.\.\.(?P=version)\)\n\n
+        $
+    """,
+    re.VERBOSE | re.DOTALL | re.IGNORECASE,
+)
 
-RE_CO_AUTHOR = re.compile(r"""
-    ^\s*Co-Authored-By:\s+(?P<name>.+)\s+<(?P<email>.+?@.+?)>\s*$
-""", re.VERBOSE | re.MULTILINE | re.IGNORECASE)
+RE_CO_AUTHOR = re.compile(
+    r"""
+        ^\s*Co-Authored-By:\s+(?P<name>.+)\s+<(?P<email>.+?@.+?)>\s*$
+    """,
+    re.VERBOSE | re.MULTILINE | re.IGNORECASE,
+)
 
 
 def get_args():
@@ -52,6 +64,20 @@ def get_args():
         "--debug",
         action="store_true",
         help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Don't make any GitHub API calls",
+    )
+    parser.add_argument(
+        "--check",
+        metavar="GITREF",
+        help=(
+            "Validate the changelog added by a specific git ref, usually HEAD.\n"
+            + f"Must be a release commit using the '{RE_RELEASE_COMMIT_MESSAGE.pattern}' format.\n"
+            + 'Implies --dry-run and --tag="".'
+        ),
     )
     parser.add_argument(
         "--repo",
@@ -134,6 +160,18 @@ class Git:
             raise ValueError(f"Could not get tag from git:\n{err.stderr}") from err
 
     @classmethod
+    def commit_msg(cls, ref: str = "HEAD") -> str:
+        try:
+            return cls._output(
+                "show",
+                "-s",
+                "--format=%s",
+                ref,
+            )
+        except subprocess.CalledProcessError as err:
+            raise ValueError(f"Could not get commit message from git:\n{err.stderr}") from err
+
+    @classmethod
     def shortlog(cls, start: str, end: str) -> str:
         try:
             return cls._output(
@@ -151,7 +189,7 @@ class GitHubAPI:
     PER_PAGE = 100
     MAX_REQUESTS = 10
 
-    def __init__(self, repo: str, tag: str):
+    def __init__(self, repo: str, tag: str, dry_run: bool = False):
         self.authenticated = False
         self.repo = repo
         self.tag = tag
@@ -159,7 +197,10 @@ class GitHubAPI:
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": repo,
         }
-        self._get_api_key()
+        if dry_run:
+            log.info("dry-run: Not making any GitHub API calls")
+        else:
+            self._get_api_key()
 
     def _get_api_key(self):
         github_token, releases_api_key = getenv("GITHUB_TOKEN"), getenv("RELEASES_API_KEY")
@@ -184,13 +225,13 @@ class GitHubAPI:
     def call(
         self,
         host: str = "api.github.com",
-        method: Literal["GET", "POST", "PATCH"] = "GET",
+        method: Literal["GET", "POST", "PATCH", "DELETE"] = "GET",
         endpoint: str = "/",
-        headers: Optional[dict[str, Any]] = None,
+        headers: dict[str, Any] | None = None,
         raise_failure: bool = True,
         **kwargs,
     ) -> requests.Response:
-        func = requests.post if method == "POST" else requests.patch if method == "PATCH" else requests.get
+        func: Callable = requests.post if method == "POST" else requests.patch if method == "PATCH" else requests.get
 
         response: requests.Response = func(
             f"https://{host}{endpoint}",
@@ -214,7 +255,7 @@ class GitHubAPI:
     def get_id(self, response: requests.Response) -> int:
         return self.get_response_json_key(response, "id")
 
-    def get_release_id(self) -> Optional[int]:
+    def get_release_id(self) -> int | None:
         log.debug(f"Checking for existing release in {self.repo} tagged by {self.tag}")
         response = self.call(
             endpoint=f"/repos/{self.repo}/releases/tags/{self.tag}",
@@ -223,10 +264,10 @@ class GitHubAPI:
 
         return None if response.status_code >= 400 else self.get_id(response)
 
-    def create_release(self, payload: dict) -> Optional[int]:
+    def create_release(self, payload: dict) -> int:
         if not self.authenticated:
             log.info(f"dry-run: Would have created GitHub release {self.repo}#{self.tag} with:\n{pformat(payload)}")
-            return
+            return 0
 
         log.info(f"Creating new GitHub release {self.repo}#{self.tag}")
         res = self.call(
@@ -251,16 +292,17 @@ class GitHubAPI:
         )
         log.info(f"Successfully updated existing GitHub release {self.repo}#{self.tag}")
 
-    def create_or_update_release(self, **payload) -> int:
-        payload.update(tag_name=self.tag)
-        release_id = self.get_release_id()
+    def delete_release(self, release_id: int) -> None:
+        if not self.authenticated:
+            log.info(f"dry-run: Would have deleted GitHub release {self.repo}#{self.tag}")
+            return
 
-        if not release_id:
-            return self.create_release(payload)
-
-        self.update_release(release_id, payload)
-
-        return release_id
+        log.info(f"Deleting GitHub release {self.repo}#{self.tag}")
+        self.call(
+            method="DELETE",
+            endpoint=f"/repos/{self.repo}/releases/{release_id}",
+        )
+        log.info(f"Successfully deleted GitHub release {self.repo}#{self.tag}")
 
     def upload_asset(self, release_id: int, filename: str, filehandle: IO):
         if not self.authenticated:
@@ -278,13 +320,33 @@ class GitHubAPI:
         )
         log.info(f"Successfully uploaded '{filename}' to GitHub release {self.repo}#{self.tag}")
 
+    def publish_release(self, name: str, body: str, filehandles: Mapping[str, IO[bytes]]):
+        release_id = self.create_release({
+            "tag_name": self.tag,
+            "draft": True,
+            "name": name,
+            "body": body,
+        })
+
+        try:
+            for filename, filehandle in filehandles.items():
+                self.upload_asset(release_id, filename, filehandle)
+
+            self.update_release(
+                release_id,
+                {"draft": False},
+            )
+        except requests.RequestException as err:
+            log.error(f"Unable to publish release: {err}")
+            self.delete_release(release_id)
+
     def get_contributors(self, start: str, end: str) -> list[Author]:
         log.debug(f"Getting contributors of {self.repo} in commit range {start}...{end}")
 
         authors: dict[Email, Author] = {}
         co_authors: list[Email] = []
 
-        total_commits = None
+        total_commits: int | None = None
         parsed_commits = 0
         page = 0
 
@@ -314,15 +376,20 @@ class GitHubAPI:
 
             for commitdata in commits:
                 commit = commitdata.get("commit") or {}
+                author = commitdata.get("author") or {}
 
                 # ignore merge commits
                 if len(commitdata.get("parents") or []) > 1:
                     continue
 
+                # ignore bots
+                if author.get("type", "").lower() == "bot":
+                    continue
+
                 # GitHub identifies its users by checking the commit-author's email address
-                commit_author_email = Email((commit.get("author") or {}).get("email"))
+                commit_author_email = Email((commit.get("author") or {}).get("email", ""))
                 # The commit-author's name can differ from the GitHub user account name -> use the provided author login
-                author_name = (commitdata.get("author") or {}).get("login")
+                author_name: str | None = author.get("login")
                 if not commit_author_email or not author_name:
                     continue
 
@@ -359,18 +426,19 @@ class GitHubAPI:
 
 
 class Release:
-    def __init__(self, tag: str, template: Path, changelog: Path):
-        self.tag = tag
+    def __init__(self, ref: str, version: str, template: Path, changelog: Path):
+        self.ref = ref
+        self.version = version
         self.template = template
         self.changelog = changelog
 
     @staticmethod
-    def _read_file(path: Path):
-        with open(path, "r", encoding="utf-8") as fh:
+    def _read_file(path: Path) -> str:
+        with path.open("r", encoding="utf-8") as fh:
             contents = fh.read()
 
         if not contents:
-            raise IOError()
+            raise OSError()
 
         return contents
 
@@ -381,7 +449,7 @@ class Release:
         except OSError as err:
             raise OSError("Missing release template file") from err
 
-    def _read_changelog(self):
+    def _read_changelog(self) -> str:
         log.debug(f"Opening changelog file: {self.changelog}")
         try:
             return self._read_file(self.changelog)
@@ -392,15 +460,27 @@ class Release:
         changelog = self._read_changelog()
 
         log.debug("Parsing changelog file")
-        for match in re.finditer(RE_CHANGELOG, changelog):
-            if match.group("version") == self.tag:
+        sections = re.split(RE_CHANGELOG_DELIM, changelog)
+        num = len(sections)
+        for idx, section in enumerate(iter(sections)):
+            if idx == 0:
+                continue
+            elif idx == num - 1:
+                # workaround for whitespace at EOF,
+                # so we can have a sensible error message on missing changelog for current tag
+                section += "\n"
+
+            if not (match := re.search(RE_CHANGELOG_CONTENT, section)):
+                raise ValueError(f"Invalid changelog format:\n{section}")
+
+            if match.group("version") == self.version:
                 return match.groupdict()
 
-        raise KeyError("Missing changelog for current release")
+        raise KeyError(f"Missing changelog for release {self.version}")
 
     @staticmethod
     @contextmanager
-    def get_file_handles(assets: list[Path]) -> dict[str, IO]:
+    def get_file_handles(assets: list[Path]) -> Generator[Mapping[str, IO[bytes]], None, None]:
         handles = {}
         try:
             for asset in assets:
@@ -408,7 +488,7 @@ class Release:
                 if not asset.is_file():
                     continue
                 log.info(f"Found release asset '{asset.name}'")
-                handles[asset.name] = open(asset, "rb")
+                handles[asset.name] = asset.open("rb")
             yield handles
         finally:
             for handle in handles.values():
@@ -428,7 +508,7 @@ class Release:
 
         if not no_contributors or not no_shortlog:
             # don't include the tagged release commit
-            prev_commit = f"{self.tag}~1"
+            prev_commit = f"{self.ref}~1"
 
             # get the previous tag
             start = Git.tag(prev_commit)
@@ -447,46 +527,62 @@ class Release:
         return jinjatemplate.render(context)
 
 
-def main(args: argparse.Namespace):
-    # if no tag was provided, get the current tag from `git describe --tags`
-    tag = args.tag or Git.tag()
-    if not tag:
-        raise ValueError("Missing git tag")
-
-    log.info(f"Repo: {args.repo}")
-    log.info(f"Tag: {tag}")
-
-    release = Release(tag, args.template, args.changelog)
-
-    # get file handles of release assets first, to prevent unnecessary API requests if input files can't be found
-    with release.get_file_handles(args.assets) as filehandles:
-        # initialize GitHub API
-        api = GitHubAPI(args.repo, tag)
-
-        # prepare the release body with the changelog, contributors list and git shortlog
-        body = release.get_body(api, args.no_contributors, args.no_shortlog)
-
-        # create a new release or update an existing one with the same tag
-        release_id = api.create_or_update_release(
-            name=f"Streamlink {tag}",
-            body=body,
-        )
-
-        # upload assets
-        for filename, filehandle in filehandles.items():
-            api.upload_asset(release_id, filename, filehandle)
-
-    log.info("Done")
-
-
-if __name__ == "__main__":
-    args = get_args()
+def main() -> None:
+    args: argparse.Namespace = get_args()
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
         format="[%(levelname)s] %(message)s",
     )
 
+    dry_run = args.dry_run
+
+    if args.check:
+        dry_run = True
+        commit_msg = Git.commit_msg(args.check)
+        if not (match := RE_RELEASE_COMMIT_MESSAGE.search(commit_msg)):
+            log.warning(f"Git ref '{args.check}' is not a release commit, exiting...")
+            log.warning(commit_msg)
+            return
+
+        ref = args.check
+        version = match.group("version")
+    else:
+        ref = version = args.tag or Git.tag()
+        if not ref:
+            raise ValueError("Missing git tag")
+
+    log.info(f"Repo: {args.repo}")
+    log.info(f"Ref: {ref}")
+    log.info(f"Version: {version}")
+
+    release = Release(ref, version, args.template, args.changelog)
+
+    # get file handles of release assets first, to prevent unnecessary API requests if input files can't be found
+    with release.get_file_handles(args.assets) as filehandles:
+        # initialize GitHub API
+        api = GitHubAPI(args.repo, ref, dry_run=dry_run)
+
+        # prepare the release body with the changelog, contributors list and git shortlog
+        body = release.get_body(api, args.no_contributors, args.no_shortlog)
+
+        # publish the new release
+        api.publish_release(
+            name=f"Streamlink {version}",
+            body=body,
+            filehandles=filehandles,
+        )
+
+    log.info("Done")
+
+
+if __name__ == "__main__":
+    # noinspection PyBroadException
     try:
-        main(args)
+        main()
     except KeyboardInterrupt:
         sys.exit(130)
+    except Exception:
+        log.exception("Error", exc_info=True)
+        sys.exit(1)
+    else:
+        sys.exit(0)

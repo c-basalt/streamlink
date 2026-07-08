@@ -8,16 +8,16 @@ $url teve2.com.tr
 $type live, vod
 """
 
-import logging
 import re
 from urllib.parse import urljoin
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, PluginError, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
 @pluginmatcher(re.compile(r"https?://(?:www\.)?cnnturk\.com/"))
@@ -139,7 +139,7 @@ class Dogan(Plugin):
         return urljoin(service_url or default_service_url, secure_path)
 
     def _query_hls_url(self, content_id):
-        for idx, match in enumerate(self.matches[:len(self.API_URLS)]):
+        for idx, match in enumerate(self.matches[: len(self.API_URLS)]):
             if match:
                 return self._api_query_new(content_id, self.API_URLS[idx])
 

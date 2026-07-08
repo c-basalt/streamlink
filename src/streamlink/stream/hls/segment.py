@@ -1,8 +1,24 @@
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Dict, List, NamedTuple, Optional, Union
+from __future__ import annotations
 
+import re
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, NamedTuple
+
+from streamlink.logger import getLogger
 from streamlink.stream.segmented.segment import Segment
+from streamlink.utils.dataclass import FormattedDataclass
+from streamlink.utils.l10n import Language
+
+
+if TYPE_CHECKING:
+    from datetime import datetime, timedelta
+
+
+log = getLogger(".".join(__name__.split(".")[:-1]))
+
+
+_MEDIA_LANGUAGE_CODES_RESERVED_LOCAL = re.compile(r"^q[a-t][a-z]$")
+_MEDIA_LANGUAGE_CODES_PRIVATE_USE_SUBTAGS = re.compile(r"^[a-z]{2,3}-x-\S+$")
 
 
 class Resolution(NamedTuple):
@@ -13,53 +29,79 @@ class Resolution(NamedTuple):
 # EXTINF
 class ExtInf(NamedTuple):
     duration: float  # version >= 3: float
-    title: Optional[str]
+    title: str | None
 
 
 # EXT-X-BYTERANGE
 class ByteRange(NamedTuple):  # version >= 4
     range: int
-    offset: Optional[int]
+    offset: int | None
 
 
 # EXT-X-DATERANGE
-class DateRange(NamedTuple):
-    id: Optional[str]
-    classname: Optional[str]
-    start_date: Optional[datetime]
-    end_date: Optional[datetime]
-    duration: Optional[timedelta]
-    planned_duration: Optional[timedelta]
+@dataclass(kw_only=True)
+class DateRange(metaclass=FormattedDataclass):
+    id: str | None
+    classname: str | None
+    start_date: datetime | None
+    end_date: datetime | None
+    duration: timedelta | None
+    planned_duration: timedelta | None
     end_on_next: bool
-    x: Dict[str, str]
+    x: dict[str, str] = field(repr=False)
 
 
 # EXT-X-KEY
-class Key(NamedTuple):
+@dataclass(kw_only=True)
+class Key:
     method: str
-    uri: Optional[str]
-    iv: Optional[bytes]  # version >= 2
-    key_format: Optional[str]  # version >= 5
-    key_format_versions: Optional[str]  # version >= 5
+    uri: str | None = field(repr=False)
+    iv: bytes | None = field(repr=False)  # version >= 2
+    key_format: str | None  # version >= 5
+    key_format_versions: str | None  # version >= 5
 
 
 # EXT-X-MAP
-class Map(NamedTuple):
-    uri: str
-    byterange: Optional[ByteRange]
+@dataclass(kw_only=True)
+class Map:
+    uri: str = field(repr=False)
+    key: Key | None
+    byterange: ByteRange | None
 
 
 # EXT-X-MEDIA
-class Media(NamedTuple):
-    uri: Optional[str]
+@dataclass(kw_only=True)
+class Media:
+    uri: str | None
     type: str
     group_id: str
-    language: Optional[str]
+    language: str | None
     name: str
     default: bool
     autoselect: bool
     forced: bool
-    characteristics: Optional[str]
+    characteristics: str | None
+
+    parsed_language: Language | None = field(init=False, default=None, repr=False, hash=False, compare=False)
+
+    def __post_init__(self):
+        # parse the media playlist language, so we can compare it with the user's input
+        self._parse_language()
+
+    def _parse_language(self):
+        if (
+            self.language is None
+            or _MEDIA_LANGUAGE_CODES_RESERVED_LOCAL.match(self.language)
+            or _MEDIA_LANGUAGE_CODES_PRIVATE_USE_SUBTAGS.match(self.language)
+        ):
+            return
+
+        try:
+            self.parsed_language = Language.get(self.language)
+        except LookupError:
+            language = self.language
+            name = self.name
+            log.warning("Unrecognized language for media playlist: language=%r name=%r", language, name)
 
 
 # EXT-X-START
@@ -69,38 +111,40 @@ class Start(NamedTuple):
 
 
 # EXT-X-STREAM-INF
-class StreamInfo(NamedTuple):
+@dataclass(kw_only=True)
+class StreamInfo:
     bandwidth: int
-    program_id: Optional[str]  # version < 6
-    codecs: List[str]
-    resolution: Optional[Resolution]
-    audio: Optional[str]
-    video: Optional[str]
-    subtitles: Optional[str]
+    program_id: str | None  # version < 6
+    codecs: list[str]
+    resolution: Resolution | None
+    framerate: float | None
+    audio: str | None
+    video: str | None
+    subtitles: str | None
 
 
 # EXT-X-I-FRAME-STREAM-INF
-class IFrameStreamInfo(NamedTuple):
+@dataclass(kw_only=True)
+class IFrameStreamInfo:
     bandwidth: int
-    program_id: Optional[str]
-    codecs: List[str]
-    resolution: Optional[Resolution]
-    video: Optional[str]
+    program_id: str | None
+    codecs: list[str]
+    resolution: Resolution | None
+    video: str | None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class HLSPlaylist:
     uri: str
-    stream_info: Union[StreamInfo, IFrameStreamInfo]
-    media: List[Media]
+    stream_info: StreamInfo | IFrameStreamInfo
+    media: list[Media]
     is_iframe: bool
 
 
-@dataclass
+@dataclass(kw_only=True)
 class HLSSegment(Segment):
-    title: Optional[str]
-    key: Optional[Key]
-    discontinuity: bool
-    byterange: Optional[ByteRange]
-    date: Optional[datetime]
-    map: Optional[Map]
+    title: str | None
+    key: Key | None
+    byterange: ByteRange | None
+    date: datetime | None
+    map: Map | None

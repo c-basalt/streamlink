@@ -1,6 +1,12 @@
-from typing import Callable, Coroutine
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import trio
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
 
 
 def _factory_find_free_port(name: str, address_family: int) -> Callable[[str], Coroutine[None, None, int]]:

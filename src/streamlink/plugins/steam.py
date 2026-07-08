@@ -7,30 +7,30 @@ $account Some streams require a login
 """
 
 import base64
-import logging
 import re
 import time
 
 from streamlink.exceptions import FatalPluginError
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.dash import DASHStream
 from streamlink.utils.crypto import RSA, PKCS1_v1_5
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
 class SteamLoginFailed(Exception):
     pass
 
 
-@pluginmatcher(re.compile(
-    r"https?://steamcommunity\.com/broadcast/watch/(\d+)",
-))
-@pluginmatcher(re.compile(
-    r"https?://steam\.tv/(\w+)",
-))
+@pluginmatcher(
+    re.compile(r"https?://steamcommunity\.com/broadcast/watch/(\d+)"),
+)
+@pluginmatcher(
+    re.compile(r"https?://steam\.tv/(\w+)"),
+)
 @pluginargument(
     "email",
     requires=["password"],
@@ -193,15 +193,18 @@ class SteamBroadcastPlugin(Plugin):
         )
 
     def _find_steamid(self, url):
-        return self.session.http.get(url, schema=validate.Schema(
-            validate.parse_html(),
-            validate.xml_xpath_string(".//div[@id='webui_config']/@data-broadcast"),
-            validate.none_or_all(
-                validate.parse_json(),
-                {"steamid": str},
-                validate.get("steamid"),
+        return self.session.http.get(
+            url,
+            schema=validate.Schema(
+                validate.parse_html(),
+                validate.xml_xpath_string(".//div[@id='webui_config']/@data-broadcast"),
+                validate.none_or_all(
+                    validate.parse_json(),
+                    {"steamid": str},
+                    validate.get("steamid"),
+                ),
             ),
-        ))
+        )
 
     def _get_streams(self):
         self.session.http.headers["User-Agent"] = f"streamlink/{self.session.version}"

@@ -1,28 +1,37 @@
+from __future__ import annotations
+
 from contextlib import nullcontext
-from typing import Awaitable, Callable, Union, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 from unittest.mock import ANY, AsyncMock, Mock, call
 
 import pytest
 import trio
 from trio.testing import wait_all_tasks_blocked
 
-from streamlink.session import Streamlink
+from streamlink.compat import ExceptionGroup
 from streamlink.webbrowser.cdp.client import CDPClient, CDPClientSession, RequestPausedHandler
 from streamlink.webbrowser.cdp.connection import CDPConnection, CDPSession
 from streamlink.webbrowser.cdp.devtools.fetch import RequestPaused
 from streamlink.webbrowser.cdp.devtools.target import SessionID, TargetID
 from streamlink.webbrowser.cdp.exceptions import CDPError
-from tests.webbrowser.cdp import FakeWebsocketConnection
+
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from streamlink.session import Streamlink
+    from tests.webbrowser.cdp import FakeWebsocketConnection
+
+    TAsyncHandler: TypeAlias = AsyncMock | Callable[[CDPClientSession, RequestPaused], Awaitable]
 
 
 def async_handler(*args, **kwargs):
-    return cast(Union[AsyncMock, Callable[[CDPClientSession, RequestPaused], Awaitable]], AsyncMock(*args, **kwargs))
+    return cast("TAsyncHandler", AsyncMock(*args, **kwargs))
 
 
 @pytest.fixture()
 def chromium_webbrowser(monkeypatch: pytest.MonkeyPatch):
-    # noinspection PyUnusedLocal
-    def mock_launch(*args, **kwargs):
+    def mock_launch(*_, **__):
         return trio.open_nursery()
 
     mock_chromium_webbrowser = Mock(
@@ -35,13 +44,20 @@ def chromium_webbrowser(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture()
-async def cdp_client(session: Streamlink, chromium_webbrowser: Mock, websocket_connection: FakeWebsocketConnection):
-    async with CDPClient.run(session) as cdp_client:
+async def cdp_client(
+    request: pytest.FixtureRequest,
+    session: Streamlink,
+    chromium_webbrowser: Mock,
+    websocket_connection: FakeWebsocketConnection,
+):
+    params = getattr(request, "param", {})
+    headless = params.get("headless", False)
+    async with CDPClient.run(session, headless=headless) as cdp_client:
         yield cdp_client
 
 
 @pytest.fixture()
-async def cdp_client_session(request: pytest.FixtureRequest, cdp_client: CDPClient):
+def cdp_client_session(request: pytest.FixtureRequest, cdp_client: CDPClient):
     target_id = TargetID("01234")
     session_id = SessionID("56789")
     session = cdp_client.cdp_connection.sessions[session_id] = CDPSession(
@@ -61,52 +77,62 @@ class TestLaunch:
 
     @pytest.fixture(autouse=True)
     def mock_run(self, monkeypatch: pytest.MonkeyPatch, cdp_client: Mock):
-        mock_run = Mock(return_value=Mock(
-            __aenter__=AsyncMock(return_value=cdp_client),
-            __aexit__=AsyncMock(),
-        ))
+        mock_run = Mock(
+            return_value=Mock(
+                __aenter__=AsyncMock(return_value=cdp_client),
+                __aexit__=AsyncMock(),
+            ),
+        )
         monkeypatch.setattr(CDPClient, "run", mock_run)
         return mock_run
 
     @pytest.fixture(autouse=True)
-    def _mock_launch(self, request: pytest.FixtureRequest, session: Streamlink, mock_run, cdp_client: Mock):
+    def _mock_launch(self, request: pytest.FixtureRequest, session: Streamlink, mock_run: Mock, cdp_client: Mock):
         result = object()
         mock_runner = AsyncMock(return_value=result)
         with getattr(request, "param", nullcontext()):
             assert CDPClient.launch(session, mock_runner) is result
             assert mock_runner.await_args_list == [call(cdp_client)]
 
-    @pytest.mark.parametrize(("session", "options"), [
-        pytest.param(
-            {},
-            dict(executable=None, timeout=20.0, cdp_host=None, cdp_port=None, cdp_timeout=2.0, headless=True),
-            id="Default options",
-        ),
-        pytest.param(
-            {
-                "webbrowser-executable": "foo",
-                "webbrowser-timeout": 123.45,
-                "webbrowser-cdp-host": "::1",
-                "webbrowser-cdp-port": 1234,
-                "webbrowser-cdp-timeout": 12.34,
-                "webbrowser-headless": False,
-            },
-            dict(executable="foo", timeout=123.45, cdp_host="::1", cdp_port=1234, cdp_timeout=12.34, headless=False),
-            id="Custom options",
-        ),
-    ], indirect=["session"])
+    @pytest.mark.parametrize(
+        ("session", "options"),
+        [
+            pytest.param(
+                {},
+                dict(executable=None, timeout=20.0, cdp_host=None, cdp_port=None, cdp_timeout=2.0, headless=False),
+                id="Default options",
+            ),
+            pytest.param(
+                {
+                    "webbrowser-executable": "foo",
+                    "webbrowser-timeout": 123.45,
+                    "webbrowser-cdp-host": "::1",
+                    "webbrowser-cdp-port": 1234,
+                    "webbrowser-cdp-timeout": 12.34,
+                    "webbrowser-headless": True,
+                },
+                dict(executable="foo", timeout=123.45, cdp_host="::1", cdp_port=1234, cdp_timeout=12.34, headless=True),
+                id="Custom options",
+            ),
+        ],
+        indirect=["session"],
+    )
     def test_options(self, session: Streamlink, mock_run: Mock, options: dict):
         assert mock_run.call_args_list == [call(session=session, **options)]
 
     # noinspection PyTestParametrized
     @pytest.mark.usefixtures("_mock_launch")
-    @pytest.mark.parametrize(("session", "_mock_launch"), [
-        pytest.param(
-            {"webbrowser": False},
-            pytest.raises(CDPError, match="^The webbrowser API has been disabled by the user$"),
-            id="Raises CDPError",
-        ),
-    ], indirect=["session", "_mock_launch"])
+    @pytest.mark.parametrize(
+        ("session", "_mock_launch"),
+        [
+            pytest.param(
+                {"webbrowser": False},
+                pytest.raises(CDPError, match=r"^The webbrowser API has been disabled by the user$"),
+                id="Raises CDPError",
+            ),
+        ],
+        indirect=["session", "_mock_launch"],
+    )
     def test_disabled(self, session: Streamlink, mock_run):
         assert not mock_run.called
 
@@ -133,7 +159,7 @@ class TestRun:
         self,
         cdp_client: CDPClient,
         websocket_connection: FakeWebsocketConnection,
-        fail_unhandled_requests,
+        fail_unhandled_requests: bool,
     ):
         client_session = None
 
@@ -178,7 +204,7 @@ class TestEvaluate:
 
     @pytest.mark.trio()
     async def test_exception(self, cdp_client_session: CDPClientSession, websocket_connection: FakeWebsocketConnection):
-        with pytest.raises(CDPError, match="^SyntaxError: Invalid regular expression: missing /$"):  # noqa: PT012
+        with pytest.raises(ExceptionGroup) as excinfo:  # noqa: PT012
             async with trio.open_nursery() as nursery:
                 nursery.start_soon(cdp_client_session.evaluate, "/")
 
@@ -202,9 +228,11 @@ class TestEvaluate:
                     }}
                 """)
 
+        assert excinfo.group_contains(CDPError, match="^SyntaxError: Invalid regular expression: missing /$")
+
     @pytest.mark.trio()
     async def test_error(self, cdp_client_session: CDPClientSession, websocket_connection: FakeWebsocketConnection):
-        with pytest.raises(CDPError, match="^Error: foo\\n    at <anonymous>:1:1$"):  # noqa: PT012
+        with pytest.raises(ExceptionGroup) as excinfo:  # noqa: PT012
             async with trio.open_nursery() as nursery:
                 nursery.start_soon(cdp_client_session.evaluate, "new Error('foo')")
 
@@ -221,55 +249,60 @@ class TestEvaluate:
                     }}
                 """)
 
+        assert excinfo.group_contains(CDPError, match="^Error: foo\\n    at <anonymous>:1:1$")
+
 
 class TestRequestPausedHandler:
-    @pytest.mark.parametrize(("url_pattern", "regex_pattern"), [
-        pytest.param(
-            r"abc?def?xyz",
-            r"^abc.def.xyz$",
-            id="Question mark",
-        ),
-        pytest.param(
-            r"abc*def*xyz",
-            r"^abc.+def.+xyz$",
-            id="Star",
-        ),
-        pytest.param(
-            r"^(.[a-z])\d$",
-            r"^\^\(\.\[a\-z\]\)\\d\$$",
-            id="Special characters",
-        ),
-        pytest.param(
-            r"abc\?def\*xyz",
-            r"^abc\?def\*xyz$",
-            id="Escaped question mark and star",
-        ),
-        pytest.param(
-            r"abc\\?def\\*xyz",
-            r"^abc\\\\.def\\\\.+xyz$",
-            id="2 escape characters",
-        ),
-        pytest.param(
-            r"abc\\\?def\\\*xyz",
-            r"^abc\\\\\?def\\\\\*xyz$",
-            id="3 escape characters",
-        ),
-        pytest.param(
-            r"abc\\\\?def\\\\*xyz",
-            r"^abc\\\\\\\\.def\\\\\\\\.+xyz$",
-            id="4 escape characters",
-        ),
-        pytest.param(
-            r"abc\\\\\?def\\\\\*xyz",
-            r"^abc\\\\\\\\\?def\\\\\\\\\*xyz$",
-            id="5 escape characters",
-        ),
-        pytest.param(
-            r"http://*.name.tld/foo\?bar=baz",
-            r"^http://.+\.name\.tld/foo\?bar=baz$",
-            id="Typical URL pattern",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        ("url_pattern", "regex_pattern"),
+        [
+            pytest.param(
+                r"abc?def?xyz",
+                r"^abc.def.xyz$",
+                id="Question mark",
+            ),
+            pytest.param(
+                r"abc*def*xyz",
+                r"^abc.+def.+xyz$",
+                id="Star",
+            ),
+            pytest.param(
+                r"^(.[a-z])\d$",
+                r"^\^\(\.\[a\-z\]\)\\d\$$",
+                id="Special characters",
+            ),
+            pytest.param(
+                r"abc\?def\*xyz",
+                r"^abc\?def\*xyz$",
+                id="Escaped question mark and star",
+            ),
+            pytest.param(
+                r"abc\\?def\\*xyz",
+                r"^abc\\\\.def\\\\.+xyz$",
+                id="2 escape characters",
+            ),
+            pytest.param(
+                r"abc\\\?def\\\*xyz",
+                r"^abc\\\\\?def\\\\\*xyz$",
+                id="3 escape characters",
+            ),
+            pytest.param(
+                r"abc\\\\?def\\\\*xyz",
+                r"^abc\\\\\\\\.def\\\\\\\\.+xyz$",
+                id="4 escape characters",
+            ),
+            pytest.param(
+                r"abc\\\\\?def\\\\\*xyz",
+                r"^abc\\\\\\\\\?def\\\\\\\\\*xyz$",
+                id="5 escape characters",
+            ),
+            pytest.param(
+                r"http://*.name.tld/foo\?bar=baz",
+                r"^http://.+\.name\.tld/foo\?bar=baz$",
+                id="Typical URL pattern",
+            ),
+        ],
+    )
     def test_url_pattern_to_regex_pattern(self, url_pattern: str, regex_pattern: str):
         assert RequestPausedHandler._url_pattern_to_regex_pattern(url_pattern).pattern == regex_pattern
 
@@ -289,33 +322,36 @@ class TestRequestPausedHandler:
         assert cdp_client_session._request_handlers[1].on_request
         assert cdp_client_session._request_handlers[3].on_request
 
-    @pytest.mark.parametrize(("args", "matches"), [
-        pytest.param(
-            dict(async_handler=async_handler(), on_request=False),
-            False,
-            id="On response - Any URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), on_request=True),
-            True,
-            id="On request - Any URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), url_pattern="http://localhost/", on_request=True),
-            True,
-            id="Matching URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), url_pattern="http://l?c?l*/", on_request=True),
-            True,
-            id="Matching wildcard URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), url_pattern="http://other/", on_request=True),
-            False,
-            id="Non-matching URL",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        ("args", "matches"),
+        [
+            pytest.param(
+                dict(async_handler=async_handler(), on_request=False),
+                False,
+                id="On response - Any URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), on_request=True),
+                True,
+                id="On request - Any URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), url_pattern="http://localhost/", on_request=True),
+                True,
+                id="Matching URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), url_pattern="http://l?c?l*/", on_request=True),
+                True,
+                id="Matching wildcard URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), url_pattern="http://other/", on_request=True),
+                False,
+                id="Non-matching URL",
+            ),
+        ],
+    )
     def test_matches_request(self, args: dict, matches: bool):
         request = RequestPaused.from_json({
             "requestId": "request-1",
@@ -332,33 +368,36 @@ class TestRequestPausedHandler:
         request_handler = RequestPausedHandler(**args)
         assert request_handler.matches(request) is matches
 
-    @pytest.mark.parametrize(("args", "matches"), [
-        pytest.param(
-            dict(async_handler=async_handler(), on_request=False),
-            True,
-            id="On response - Any URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), on_request=True),
-            False,
-            id="On request - Any URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), url_pattern="http://localhost/", on_request=False),
-            True,
-            id="Matching URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), url_pattern="http://l?c?l*/", on_request=False),
-            True,
-            id="Matching wildcard URL",
-        ),
-        pytest.param(
-            dict(async_handler=async_handler(), url_pattern="http://other/", on_request=False),
-            False,
-            id="Non-matching URL",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        ("args", "matches"),
+        [
+            pytest.param(
+                dict(async_handler=async_handler(), on_request=False),
+                True,
+                id="On response - Any URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), on_request=True),
+                False,
+                id="On request - Any URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), url_pattern="http://localhost/", on_request=False),
+                True,
+                id="Matching URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), url_pattern="http://l?c?l*/", on_request=False),
+                True,
+                id="Matching wildcard URL",
+            ),
+            pytest.param(
+                dict(async_handler=async_handler(), url_pattern="http://other/", on_request=False),
+                False,
+                id="Non-matching URL",
+            ),
+        ],
+    )
     def test_matches_response(self, args: dict, matches: bool):
         request = RequestPaused.from_json({
             "requestId": "request-1",
@@ -384,7 +423,7 @@ class TestNavigate:
             async with cdp_client_session.navigate("https://foo"):
                 pass  # pragma: no cover
 
-        with pytest.raises(CDPError, match="^Target has been detached$"):  # noqa: PT012
+        with pytest.raises(ExceptionGroup) as excinfo:  # noqa: PT012
             async with trio.open_nursery() as nursery:
                 nursery.start_soon(navigate)
 
@@ -397,19 +436,21 @@ class TestNavigate:
                     """{"method":"Target.detachedFromTarget","params":{"sessionId":"56789"}}""",
                 )
 
+        assert excinfo.group_contains(CDPError, match="^Target has been detached$")
+
     @pytest.mark.trio()
     async def test_error(self, cdp_client_session: CDPClientSession, websocket_connection: FakeWebsocketConnection):
         async def navigate():
             async with cdp_client_session.navigate("https://foo"):
                 pass  # pragma: no cover
 
-        with pytest.raises(CDPError, match="^Navigation error: failure$"):  # noqa: PT012
+        with pytest.raises(ExceptionGroup) as excinfo:  # noqa: PT012
             async with trio.open_nursery() as nursery:
                 nursery.start_soon(navigate)
 
                 await wait_all_tasks_blocked()
                 assert websocket_connection.sent == [
-                    """{"id":0,"method":"Page.enable","sessionId":"56789"}""",
+                    """{"id":0,"method":"Page.enable","params":{},"sessionId":"56789"}""",
                 ]
 
                 await websocket_connection.sender.send(
@@ -417,7 +458,7 @@ class TestNavigate:
                 )
                 await wait_all_tasks_blocked()
                 assert websocket_connection.sent == [
-                    """{"id":0,"method":"Page.enable","sessionId":"56789"}""",
+                    """{"id":0,"method":"Page.enable","params":{},"sessionId":"56789"}""",
                     """{"id":1,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
                 ]
 
@@ -426,7 +467,7 @@ class TestNavigate:
                 )
                 await wait_all_tasks_blocked()
                 assert websocket_connection.sent == [
-                    """{"id":0,"method":"Page.enable","sessionId":"56789"}""",
+                    """{"id":0,"method":"Page.enable","params":{},"sessionId":"56789"}""",
                     """{"id":1,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
                     """{"id":2,"method":"Page.disable","sessionId":"56789"}""",
                 ]
@@ -435,7 +476,10 @@ class TestNavigate:
                     """{"id":2,"result":{},"sessionId":"56789"}""",
                 )
 
+        assert excinfo.group_contains(CDPError, match="^Navigation error: failure$")
+
     @pytest.mark.trio()
+    @pytest.mark.parametrize("cdp_client", [pytest.param({"headless": True}, id="headless")], indirect=True)
     async def test_loaded(
         self,
         cdp_client_session: CDPClientSession,
@@ -447,26 +491,40 @@ class TestNavigate:
         async def navigate():
             nonlocal loaded
             async with cdp_client_session.navigate("https://foo") as frame_id:
-                assert frame_id == "frame-id-1"
+                assert str(frame_id) == "frame-id-1"
                 await cdp_client_session.loaded(frame_id)
                 loaded = True
 
         nursery.start_soon(navigate)
 
-        await wait_all_tasks_blocked()
-        assert websocket_connection.sent == [
-            """{"id":0,"method":"Page.enable","sessionId":"56789"}""",
+        expected_commands_sent = [
+            """{"id":0,"method":"Runtime.evaluate","params":"""
+            + """{"awaitPromise":false,"expression":"navigator.userAgent"},"sessionId":"56789"}""",
+            """{"id":1,"method":"Network.setUserAgentOverride","params":{"userAgent":"A Chrome UA"},"sessionId":"56789"}""",
+            """{"id":2,"method":"Page.enable","params":{},"sessionId":"56789"}""",
+            """{"id":3,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
+            """{"id":4,"method":"Page.disable","sessionId":"56789"}""",
         ]
+
+        await wait_all_tasks_blocked()
+        assert websocket_connection.sent == expected_commands_sent[0:1]
         await websocket_connection.sender.send(
-            """{"id":0,"result":{},"sessionId":"56789"}""",
+            """{"id":0,"result":{"result":{"type":"string","value":"A HeadlessChrome UA"}},"sessionId":"56789"}""",
         )
         await wait_all_tasks_blocked()
-        assert websocket_connection.sent == [
-            """{"id":0,"method":"Page.enable","sessionId":"56789"}""",
-            """{"id":1,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
-        ]
+        assert websocket_connection.sent == expected_commands_sent[0:2]
         await websocket_connection.sender.send(
-            """{"id":1,"result":{"frameId":"frame-id-1"},"sessionId":"56789"}""",
+            """{"id":1,"result":{},"sessionId":"56789"}""",
+        )
+        await wait_all_tasks_blocked()
+        assert websocket_connection.sent == expected_commands_sent[0:3]
+        await websocket_connection.sender.send(
+            """{"id":2,"result":{},"sessionId":"56789"}""",
+        )
+        await wait_all_tasks_blocked()
+        assert websocket_connection.sent == expected_commands_sent[0:4]
+        await websocket_connection.sender.send(
+            """{"id":3,"result":{"frameId":"frame-id-1"},"sessionId":"56789"}""",
         )
         await wait_all_tasks_blocked()
         await websocket_connection.sender.send(
@@ -477,70 +535,69 @@ class TestNavigate:
             """{"method":"Page.frameStoppedLoading","params":{"frameId":"frame-id-1"},"sessionId":"56789"}""",
         )
         await wait_all_tasks_blocked()
-        assert websocket_connection.sent == [
-            """{"id":0,"method":"Page.enable","sessionId":"56789"}""",
-            """{"id":1,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
-            """{"id":2,"method":"Page.disable","sessionId":"56789"}""",
-        ]
+        assert websocket_connection.sent == expected_commands_sent[0:5]
         await websocket_connection.sender.send(
-            """{"id":2,"result":{},"sessionId":"56789"}""",
+            """{"id":4,"result":{},"sessionId":"56789"}""",
         )
 
         assert loaded
 
     @pytest.mark.trio()
-    @pytest.mark.parametrize(("on_request", "fetch_enable_params"), [
-        pytest.param(
-            (False,),
-            (
-                """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
-                + """{"requestStage":"Response","urlPattern":"http://foo"}]}"""
+    @pytest.mark.parametrize(
+        ("on_request", "fetch_enable_params"),
+        [
+            pytest.param(
+                (False,),
+                (
+                    """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
+                    + """{"requestStage":"Response","urlPattern":"http://foo"}]}"""
+                ),
+                id="Single request handler, on response",
             ),
-            id="Single request handler, on response",
-        ),
-        pytest.param(
-            (True,),
-            (
-                """{"handleAuthRequests":true,"patterns":[{"requestStage":"Request","urlPattern":"*"},"""
-                + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+            pytest.param(
+                (True,),
+                (
+                    """{"handleAuthRequests":true,"patterns":[{"requestStage":"Request","urlPattern":"*"},"""
+                    + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+                ),
+                id="Single request handler, on request",
             ),
-            id="Single request handler, on request",
-        ),
-        pytest.param(
-            (False, False),
-            (
-                """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
-                + """{"requestStage":"Response","urlPattern":"http://foo"}]}"""
+            pytest.param(
+                (False, False),
+                (
+                    """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
+                    + """{"requestStage":"Response","urlPattern":"http://foo"}]}"""
+                ),
+                id="Multiple request handlers, on response",
             ),
-            id="Multiple request handlers, on response",
-        ),
-        pytest.param(
-            (True, True),
-            (
-                """{"handleAuthRequests":true,"patterns":[{"requestStage":"Request","urlPattern":"*"},"""
-                + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+            pytest.param(
+                (True, True),
+                (
+                    """{"handleAuthRequests":true,"patterns":[{"requestStage":"Request","urlPattern":"*"},"""
+                    + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+                ),
+                id="Multiple request handlers, on request",
             ),
-            id="Multiple request handlers, on request",
-        ),
-        pytest.param(
-            (False, True),
-            (
-                """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
-                + """{"requestStage":"Request","urlPattern":"*"},{"requestStage":"Response","urlPattern":"http://foo"},"""
-                + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+            pytest.param(
+                (False, True),
+                (
+                    """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
+                    + """{"requestStage":"Request","urlPattern":"*"},{"requestStage":"Response","urlPattern":"http://foo"},"""
+                    + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+                ),
+                id="Multiple request handlers, on response and on request",
             ),
-            id="Multiple request handlers, on response and on request",
-        ),
-        pytest.param(
-            (True, False),
-            (
-                """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
-                + """{"requestStage":"Request","urlPattern":"*"},{"requestStage":"Response","urlPattern":"http://foo"},"""
-                + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+            pytest.param(
+                (True, False),
+                (
+                    """{"handleAuthRequests":true,"patterns":[{"requestStage":"Response","urlPattern":"*"},"""
+                    + """{"requestStage":"Request","urlPattern":"*"},{"requestStage":"Response","urlPattern":"http://foo"},"""
+                    + """{"requestStage":"Request","urlPattern":"http://foo"}]}"""
+                ),
+                id="Multiple request handlers, on request and on response",
             ),
-            id="Multiple request handlers, on request and on response",
-        ),
-    ])
+        ],
+    )
     async def test_fetch_enable(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -553,10 +610,10 @@ class TestNavigate:
         mock_on_fetch_request_paused = AsyncMock()
         monkeypatch.setattr(cdp_client_session, "_on_fetch_request_paused", mock_on_fetch_request_paused)
 
-        for _on_request in on_request:
-            cdp_client_session.add_request_handler(async_handler(), on_request=_on_request)
-            cdp_client_session.add_request_handler(async_handler(), on_request=_on_request)
-            cdp_client_session.add_request_handler(async_handler(), url_pattern="http://foo", on_request=_on_request)
+        for on_request_item in on_request:
+            cdp_client_session.add_request_handler(async_handler(), on_request=on_request_item)
+            cdp_client_session.add_request_handler(async_handler(), on_request=on_request_item)
+            cdp_client_session.add_request_handler(async_handler(), url_pattern="http://foo", on_request=on_request_item)
 
         async def navigate():
             async with cdp_client_session.navigate("https://foo"):
@@ -578,7 +635,7 @@ class TestNavigate:
         await wait_all_tasks_blocked()
         assert websocket_connection.sent == [
             """{"id":0,"method":"Fetch.enable","params":""" + fetch_enable_params + ""","sessionId":"56789"}""",
-            """{"id":1,"method":"Page.enable","sessionId":"56789"}""",
+            """{"id":1,"method":"Page.enable","params":{},"sessionId":"56789"}""",
         ]
         await websocket_connection.sender.send(
             """{"id":1,"result":{},"sessionId":"56789"}""",
@@ -587,7 +644,7 @@ class TestNavigate:
         await wait_all_tasks_blocked()
         assert websocket_connection.sent == [
             """{"id":0,"method":"Fetch.enable","params":""" + fetch_enable_params + ""","sessionId":"56789"}""",
-            """{"id":1,"method":"Page.enable","sessionId":"56789"}""",
+            """{"id":1,"method":"Page.enable","params":{},"sessionId":"56789"}""",
             """{"id":2,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
         ]
         await websocket_connection.sender.send(
@@ -597,7 +654,7 @@ class TestNavigate:
         await wait_all_tasks_blocked()
         assert websocket_connection.sent == [
             """{"id":0,"method":"Fetch.enable","params":""" + fetch_enable_params + ""","sessionId":"56789"}""",
-            """{"id":1,"method":"Page.enable","sessionId":"56789"}""",
+            """{"id":1,"method":"Page.enable","params":{},"sessionId":"56789"}""",
             """{"id":2,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
             """{"id":3,"method":"Page.disable","sessionId":"56789"}""",
         ]
@@ -608,7 +665,7 @@ class TestNavigate:
         await wait_all_tasks_blocked()
         assert websocket_connection.sent == [
             """{"id":0,"method":"Fetch.enable","params":""" + fetch_enable_params + ""","sessionId":"56789"}""",
-            """{"id":1,"method":"Page.enable","sessionId":"56789"}""",
+            """{"id":1,"method":"Page.enable","params":{},"sessionId":"56789"}""",
             """{"id":2,"method":"Page.navigate","params":{"url":"https://foo"},"sessionId":"56789"}""",
             """{"id":3,"method":"Page.disable","sessionId":"56789"}""",
             """{"id":4,"method":"Fetch.disable","sessionId":"56789"}""",
@@ -749,6 +806,7 @@ class TestRequestMethods:
             async with cdp_client_session.alter_request(req_paused, 404, {"a": "b", "c": "d"}) as cmproxy:
                 assert cmproxy.body == "foo"
                 assert cmproxy.response_code == 404
+                assert cmproxy.response_headers is not None
                 assert cmproxy.response_headers == {"a": "b", "c": "d"}
                 cmproxy.body = cmproxy.body.upper()
                 cmproxy.response_code -= 3
@@ -939,3 +997,122 @@ class TestOnFetchRequestPaused:
         assert isinstance(handler_bar.call_args_list[0][0][1], RequestPaused)
         assert mock_fail_request.call_args_list == []
         assert mock_continue_request.call_args_list == []
+
+
+class TestCookies:
+    @pytest.fixture(autouse=True)
+    def _assert_cookiejar(self, session: Streamlink):
+        yield
+        assert [
+            {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain,
+                "path": cookie.path,
+                "expires": cookie.expires,
+                "secure": cookie.secure,
+            }
+            for cookie in session.http.cookies
+        ] == [
+            {
+                "name": "foo",
+                "value": "bar",
+                "domain": ".mock",
+                "path": "/path",
+                "expires": 123456789.0,
+                "secure": True,
+            },
+            {
+                "name": "one",
+                "value": "two",
+                "domain": ".other",
+                "path": "/",
+                "expires": None,
+                "secure": False,
+            },
+        ]
+
+    @pytest.mark.trio()
+    async def test_apply_cookies(
+        self,
+        session: Streamlink,
+        cdp_client_session: CDPClientSession,
+        websocket_connection: FakeWebsocketConnection,
+        nursery: trio.Nursery,
+    ):
+        session.http.cookies.set("foo", "bar", domain=".mock", path="/path", expires=123456789, secure=True)
+        session.http.cookies.set("one", "two", domain=".other", path="/", expires=None, secure=False)
+        assert dict(session.http.cookies.items()) == {"foo": "bar", "one": "two"}
+
+        nursery.start_soon(cdp_client_session.apply_cookies)
+        await wait_all_tasks_blocked()
+
+        assert websocket_connection.sent == [
+            """{"id":0,"method":"Network.setCookies","params":{"cookies":["""
+            + """{"domain":".mock","expires":123456789.0,"name":"foo","path":"/path","secure":true,"value":"bar"},"""
+            + """{"domain":".other","name":"one","path":"/","secure":false,"value":"two"}"""
+            + """]},"sessionId":"56789"}""",
+        ]
+        await websocket_connection.sender.send("""{"id":0,"result":{},"sessionId":"56789"}""")
+        await wait_all_tasks_blocked()
+
+    @pytest.mark.trio()
+    async def test_retrieve_cookies(
+        self,
+        session: Streamlink,
+        cdp_client_session: CDPClientSession,
+        websocket_connection: FakeWebsocketConnection,
+        nursery: trio.Nursery,
+    ):
+        assert dict(session.http.cookies.items()) == {}
+
+        nursery.start_soon(cdp_client_session.retrieve_cookies)
+        await wait_all_tasks_blocked()
+
+        assert websocket_connection.sent == [
+            """{"id":0,"method":"Network.getCookies","params":{},"sessionId":"56789"}""",
+        ]
+        # language=json
+        await websocket_connection.sender.send("""
+            {
+                "id": 0,
+                "result": {
+                    "cookies": [
+                        {
+                            "name": "foo",
+                            "value": "bar",
+                            "domain": ".mock",
+                            "path": "/path",
+                            "expires": 123456789.0,
+                            "size": 9999,
+                            "httpOnly": true,
+                            "secure": true,
+                            "session": false,
+                            "sameSite": "Lax",
+                            "priority": "Medium",
+                            "sameParty": false,
+                            "sourceScheme": "Secure",
+                            "sourcePort": 443
+                        },
+                        {
+                            "name": "one",
+                            "value": "two",
+                            "domain": ".other",
+                            "path": "/",
+                            "expires": -1,
+                            "size": 9999,
+                            "httpOnly": true,
+                            "secure": false,
+                            "session": false,
+                            "sameSite": "Lax",
+                            "priority": "Medium",
+                            "sameParty": false,
+                            "sourceScheme": "Secure",
+                            "sourcePort": 443
+                        }
+                    ]
+                },
+                "sessionId": "56789"
+            }
+        """)
+        await wait_all_tasks_blocked()

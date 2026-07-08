@@ -18,9 +18,9 @@ from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.stream.hls import HLSStream
 
 
-@pluginmatcher(re.compile(
-    r"https?://radiko\.jp/(#!/)?(?P<state>live|ts)/(?P<station_id>[a-zA-Z0-9-]+)/?(?P<start_at>\d+)?",
-))
+@pluginmatcher(
+    re.compile(r"https?://radiko\.jp/(#!/)?(?P<state>live|ts)/(?P<station_id>[a-zA-Z0-9-]+)/?(?P<start_at>\d+)?"),
+)
 class Radiko(Plugin):
     _api_auth_1 = "https://radiko.jp/v2/api/auth1"
     _api_auth_2 = "https://radiko.jp/v2/api/auth2"
@@ -34,14 +34,13 @@ class Radiko(Plugin):
         else:
             start_at = self.match.group("start_at")
             url, token = self._timefree(station_id, start_at)
-        headers = {
+        self.session.http.headers.update({
             "X-Radiko-AuthToken": token,
-        }
-        self.session.http.headers = headers
+        })
         yield from HLSStream.parse_variant_playlist(self.session, url).items()
 
     def _live(self, station_id):
-        live_url = "http://f-radiko.smartstream.ne.jp/{}/_definst_/simul-stream.stream/playlist.m3u8".format(station_id)
+        live_url = "https://alliance-stream-radiko.smartstream.ne.jp/so/playlist.m3u8"
         token, _area_id = self._authorize()
         lsid = hashlib.md5(str(random.random()).encode("utf-8")).hexdigest()
         live_params = {
@@ -80,10 +79,10 @@ class Radiko(Plugin):
         }
         self.session.http.headers.update(headers)
         r = self.session.http.get(self._api_auth_1)
-        token = r.headers.get("x-radiko-authtoken")
-        offset = int(r.headers.get("x-radiko-keyoffset"))
-        length = int(r.headers.get("x-radiko-keylength"))
-        partial_key = base64.b64encode(self._auth_key[offset:offset + length].encode("ascii")).decode("utf-8")
+        token = r.headers.get("x-radiko-authtoken", "")
+        offset = int(r.headers.get("x-radiko-keyoffset", 0))
+        length = int(r.headers.get("x-radiko-keylength", 0))
+        partial_key = base64.b64encode(self._auth_key[offset : offset + length].encode("ascii")).decode("utf-8")
         headers = {
             "x-radiko-authtoken": token,
             "x-radiko-device": "pc",
@@ -102,7 +101,7 @@ class Radiko(Plugin):
             date = yesterday.strftime("%Y%m%d")
         else:
             date = today.strftime("%Y%m%d")
-        api = "http://radiko.jp/v3/program/station/date/{}/{}.xml".format(date, station_id)
+        api = f"http://radiko.jp/v3/program/station/date/{date}/{station_id}.xml"
         r = self.session.http.get(api)
         tree = XML(r.content)
         for x in tree[2][0][1].findall("prog"):

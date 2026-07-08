@@ -2,8 +2,7 @@ import re
 from io import BytesIO
 
 from streamlink import NoStreamsError
-from streamlink.plugin import pluginargument, pluginmatcher
-from streamlink.plugins import Plugin
+from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.stream.hls import HLSStream
 from streamlink.stream.http import HTTPStream
 from streamlink.stream.stream import Stream
@@ -16,9 +15,9 @@ class TestStream(Stream):
         return BytesIO(b"x" * 8192 * 2)
 
 
-@pluginmatcher(re.compile(
-    r"https?://test\.se",
-))
+@pluginmatcher(
+    re.compile(r"https?://test\.se"),
+)
 @pluginargument(
     "bool",
     action="store_true",
@@ -39,6 +38,7 @@ class TestPlugin(Plugin):
             return
 
         if "UnsortableStreamNames" in self.url:
+
             def gen():
                 for _ in range(3):
                     yield "vod", HTTPStream(self.session, "http://test.se/stream")

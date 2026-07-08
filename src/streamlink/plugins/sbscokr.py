@@ -9,20 +9,20 @@ $region South Korea
 """
 
 import argparse
-import logging
 import re
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://www\.sbs\.co\.kr/live/(?P<channel>[^/?]+)",
-))
+@pluginmatcher(
+    re.compile(r"https?://www\.sbs\.co\.kr/live/(?P<channel>[^/?]+)"),
+)
 @pluginargument(
     "id",
     help=argparse.SUPPRESS,
@@ -40,9 +40,11 @@ class SBScokr(Plugin):
                 schema=validate.Schema(
                     validate.parse_json(),
                     {
-                        "list": [{
-                            "channelid": str,
-                        }],
+                        "list": [
+                            {
+                                "channelid": str,
+                            },
+                        ],
                     },
                     validate.get("list"),
                     validate.map(lambda item: item["channelid"]),

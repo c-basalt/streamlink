@@ -1,15 +1,22 @@
+from __future__ import annotations
+
 import threading
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, call
 
 import pytest
 
-from streamlink.utils.named_pipe import NamedPipe, NamedPipeBase, NamedPipePosix, NamedPipeWindows
+from streamlink.utils.named_pipe import NamedPipe, NamedPipePosix, NamedPipeWindows
 
 
 try:
     from ctypes import byref, c_ulong, create_string_buffer, windll  # type: ignore[attr-defined]
 except ImportError:
     pass
+
+
+if TYPE_CHECKING:
+    from streamlink.utils.named_pipe import NamedPipeBase
 
 
 GENERIC_READ = 0x80000000
@@ -19,7 +26,7 @@ OPEN_EXISTING = 3
 class ReadNamedPipeThread(threading.Thread):
     def __init__(self, pipe: NamedPipeBase):
         super().__init__(daemon=True)
-        self.path = str(pipe.path)
+        self.path = pipe.path
         self.error = None
         self.data = b""
         self.done = threading.Event()
@@ -37,7 +44,7 @@ class ReadNamedPipeThread(threading.Thread):
 
 class ReadNamedPipeThreadPosix(ReadNamedPipeThread):
     def read(self):
-        with open(self.path, "rb") as file:
+        with self.path.open("rb") as file:
             while True:
                 data = file.read(-1)
                 if len(data) == 0:
@@ -47,7 +54,7 @@ class ReadNamedPipeThreadPosix(ReadNamedPipeThread):
 
 class ReadNamedPipeThreadWindows(ReadNamedPipeThread):
     def read(self):
-        handle = windll.kernel32.CreateFileW(self.path, GENERIC_READ, 0, None, OPEN_EXISTING, 0, None)
+        handle = windll.kernel32.CreateFileW(str(self.path), GENERIC_READ, 0, None, OPEN_EXISTING, 0, None)
         try:
             while True:
                 data = create_string_buffer(NamedPipeWindows.bufsize)
@@ -101,7 +108,7 @@ class TestNamedPipePosix:
     def test_close_error(self, monkeypatch: pytest.MonkeyPatch):
         mock_fd_close = Mock(side_effect=OSError)
         mock_fd = Mock(close=mock_fd_close)
-        monkeypatch.setattr("builtins.open", Mock(return_value=mock_fd))
+        monkeypatch.setattr("pathlib.Path.open", Mock(return_value=mock_fd))
 
         pipe = NamedPipePosix()
         assert pipe.path.is_fifo()
@@ -130,10 +137,11 @@ class TestNamedPipePosix:
         assert pipe.write(b"bar") == 3
         pipe.close()
         assert not pipe.path.is_fifo()
-        reader.done.wait(4000)
+        reader.done.wait(4)
+        reader.join(1)
+        assert not reader.is_alive()
         assert reader.error is None
         assert reader.data == b"foobar"
-        assert not reader.is_alive()
 
 
 @pytest.mark.windows_only()
@@ -196,8 +204,9 @@ class TestNamedPipeWindows:
         assert pipe.write(b"foo") == 3
         assert pipe.write(b"bar") == 3
         assert pipe.write(b"\x00") == 1
-        reader.done.wait(4000)
+        reader.done.wait(4)
+        reader.join(1)
+        assert not reader.is_alive()
         assert reader.error is None
         assert reader.data == b"foobar"
-        assert not reader.is_alive()
         pipe.close()

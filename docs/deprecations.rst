@@ -1,11 +1,117 @@
 Deprecations
 ============
 
+streamlink 8.1.0
+----------------
+
+--hls-segment-queue-threshold
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``--hls-segment-queue-threshold`` CLI argument has been deprecated in favor of :option:`--stream-segmented-queue-deadline`.
+
+
+streamlink 8.0.0
+----------------
+
+--hls-duration
+^^^^^^^^^^^^^^
+
+The ``--hls-duration`` CLI argument has been deprecated in favor of :option:`--stream-segmented-duration`,
+which affects all kinds of segmented streams, not just HLS streams.
+
+
+streamlink 7.0.0
+----------------
+
+--verbose-player
+^^^^^^^^^^^^^^^^
+
+The ``--verbose-player`` CLI argument has been deprecated in favor of :option:`--player-verbose`.
+
+--fifo
+^^^^^^
+
+The ``--fifo`` CLI argument has been deprecated in favor of :option:`--player-fifo`.
+
+
+streamlink 6.11.0
+-----------------
+
+-R/--record-and-pipe
+^^^^^^^^^^^^^^^^^^^^
+
+The ``-R``/``--record-and-pipe`` CLI argument has been deprecated in favor of using both
+:option:`--stdout` and :option:`--record` arguments at the same time.
+
+
+streamlink 6.8.0
+----------------
+
+streamlink.plugins re-exports
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:bdg-ref-danger:`Removed in 7.0.0 <migrations:streamlink.plugins re-exports>`
+
+Importing :class:`NoPluginError <streamlink.exceptions.NoPluginError>`,
+:class:`NoStreamsError <streamlink.exceptions.NoStreamsError>`, :class:`PluginError <streamlink.exceptions.PluginError>`,
+or :class:`Plugin <streamlink.plugin.plugin.Plugin>` from ``streamlink.plugins`` now emits
+a :exc:`StreamlinkDeprecationWarning`. These re-exports have already been deprecated for more than ten years
+and will finally be removed in the next major version. Import from the correct paths instead.
+
+
+streamlink 6.7.0
+----------------
+
+--plugin-dirs
+^^^^^^^^^^^^^
+
+The ``--plugin-dirs`` CLI argument for sideloading plugins from one or more custom directories, separated by commas,
+has been deprecated in favor of the newly added :option:`--plugin-dir` CLI argument, which only takes a single path,
+but can be set multiple times for loading plugins from more than one path.
+
+
+streamlink 6.6.0
+----------------
+
+HTTPSession and HTTPAdapters
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:bdg-ref-danger:`Removed in 7.0.0 <migrations:HTTPSession and HTTPAdapters>`
+
+The module structure of the :class:`Streamlink <streamlink.session.Streamlink>` session implementation and related classes
+like the ``HTTPSession`` has been re-organized.
+
+Importing ``HTTPSession`` from either ``streamlink.plugin.api`` or ``streamlink.plugin.api.http_session`` is now deprecated.
+It was never intended to import this class directly. Plugin implementors should always reference the session's ``HTTPSession``
+instance via the :attr:`Streamlink.http <streamlink.session.Streamlink.http>` attribute.
+
+In addition, importing ``TLSNoDHAdapter`` or ``TLSSecLevel1Adapter`` from ``streamlink.plugin.api.http_session`` is now also
+deprecated. Import from the ``streamlink.session.http`` module instead, if actually necessary.
+
+Streamlink.{get,load}_plugins()
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+As a result of the code refactoring mentioned above, the following plugins-related methods
+on the :class:`Streamlink <streamlink.session.Streamlink>` session class have been deprecated:
+
+``Streamlink.get_plugins()`` has been deprecated in favor of
+:meth:`Streamlink.plugins.get_loaded() <streamlink.session.plugins.StreamlinkPlugins.get_loaded>`.
+
+``Streamlink.load_plugins(path)`` has been deprecated in favor of
+:meth:`Streamlink.plugins.load_path(path) <streamlink.session.plugins.StreamlinkPlugins.load_path>`.
+
+``Streamlink.load_builtin_plugins()`` has been deprecated in favor of using
+the :class:`plugins_builtin <streamlink.session.Streamlink>` Streamlink session keyword argument.
+The old method was never publicly documented and was only used internally upon initialization.
+
+
 streamlink 5.4.0
 ----------------
 
 --force-progress
 ^^^^^^^^^^^^^^^^
+
+:bdg-ref-danger:`Removed in 7.0.0 <migrations:--force-progress>`
 
 The ``--force-progress`` CLI argument has been deprecated in favor of :option:`--progress=force`.
 
@@ -16,11 +122,11 @@ streamlink 5.3.0
 Global plugin arguments
 ^^^^^^^^^^^^^^^^^^^^^^^
 
+:bdg-ref-danger:`Removed in 6.0.0 <migrations:Global plugin arguments>`
+
 The ``is_global=True`` :py:class:`plugin argument <streamlink.options.Argument>` parameter has been deprecated.
 Instead of defining a global plugin argument to set a key-value pair on the plugin's options, use the respective option on
 the plugin's Streamlink session instance instead.
-
-:bdg-ref-danger:`Removed in 6.0.0 <migrations:Global plugin arguments>`
 
 
 streamlink 5.2.0
@@ -29,10 +135,10 @@ streamlink 5.2.0
 plugin.api.validate.text
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
+:bdg-ref-danger:`Removed in 6.0.0 <migrations:plugin.api.validate.text>`
+
 The ``plugin.api.validate.text`` alias for ``str`` has been marked as deprecated, as it is a remnant of the py2 implementation.
 Simply replace ``validate.text`` with ``str`` in each validation schema.
-
-:bdg-ref-danger:`Removed in 6.0.0 <migrations:plugin.api.validate.text>`
 
 
 streamlink 5.0.0
@@ -40,6 +146,8 @@ streamlink 5.0.0
 
 Plugin.__init__(self, url) compatibility wrapper
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:bdg-ref-danger:`Removed in 6.0.0 <migrations:Plugin.__init__(self, url) compatibility wrapper>`
 
 With the removal of the ``Plugin.bind()`` class method which was used for setting up the
 :py:class:`Streamlink <streamlink.session.Streamlink>` session instance and module name in each plugin class,
@@ -51,8 +159,6 @@ arguments when subclassing and adding a custom constructor (``*args, **kwargs``)
 Compatibility wrappers were added for old custom plugin implementations, and a deprecation message will be shown until
 the compatibility wrappers will get removed in a future release.
 
-:bdg-ref-danger:`Removed in 6.0.0 <migrations:Plugin.__init__(self, url) compatibility wrapper>`
-
 
 streamlink 4.2.0
 ----------------
@@ -60,9 +166,11 @@ streamlink 4.2.0
 url_master in HLSStream
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-The ``url_master`` parameter and attribute of the :py:class:`HLSStream <streamlink.stream.HLSStream>`
-and :py:class:`MuxedHLSStream <streamlink.stream.MuxedHLSStream>` classes have been deprecated in favor of
-the ``multivariant`` parameter and attribute. ``multivariant`` is an :py:class:`M3U8` reference of the parsed
+:bdg-ref-danger:`Removed in 8.0.0 <migrations:HLSStream url_master argument>`
+
+The ``url_master`` parameter and attribute of the :class:`HLSStream <streamlink.stream.HLSStream>`
+and :class:`MuxedHLSStream <streamlink.stream.MuxedHLSStream>` classes have been deprecated in favor of
+the ``multivariant`` parameter and attribute. ``multivariant`` is an :class:`M3U8` reference of the parsed
 HLS multivariant playlist.
 
 
@@ -83,6 +191,8 @@ streamlink 2.4.0
 Stream-type related CLI arguments
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+:bdg-ref-danger:`Removed in 7.0.0 <migrations:Stream-type related CLI arguments>`
+
 :ref:`Stream-type related CLI arguments <cli:Stream transport options>` and the respective
 :ref:`Session options <api/session:Session>` have been deprecated in favor of existing generic arguments/options,
 to avoid redundancy and potential confusion.
@@ -98,6 +208,8 @@ streamlink 2.3.0
 
 Plugin.can_handle_url() and Plugin.priority()
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:bdg-ref-danger:`Removed in 6.0.0 <migrations:Plugin.can_handle_url() and Plugin.priority()>`
 
 A new plugin URL matching API was introduced in 2.3.0 which will help Streamlink with static code analysis and an improved
 plugin loading mechanism in the future. Plugins now define their matching URLs and priorities declaratively.
@@ -175,14 +287,14 @@ message will be written to the info log output for the first plugin that gets re
    multiple ``@pluginmatcher`` decorators and/or an improved ``_get_streams()`` method which returns ``None`` or raises a
    ``NoStreamsError`` when there are no streams to be found on that particular URL.
 
-:bdg-ref-danger:`Removed in 6.0.0 <migrations:Plugin.can_handle_url() and Plugin.priority()>`
-
 
 streamlink 2.2.0
 ----------------
 
 Config file paths
 ^^^^^^^^^^^^^^^^^
+
+:bdg-ref-danger:`Removed in 7.0.0 <migrations:Config file paths>`
 
 Streamlink's default config file paths got updated and corrected on Linux/BSD, macOS and Windows.
 Old and deprecated paths will be dropped in the future.
@@ -240,6 +352,8 @@ To resolve this, move the config file(s) to the correct location or copy the con
 
 Custom plugins sideloading paths
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:bdg-ref-danger:`Removed in 7.0.0 <migrations:Custom plugins sideloading paths>`
 
 Streamlink's default custom plugins directory path got updated and corrected on Linux/BSD and macOS.
 Old and deprecated paths will be dropped in the future.

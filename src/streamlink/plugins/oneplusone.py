@@ -4,20 +4,20 @@ $url 1plus1.video
 $type live
 """
 
-import logging
 import re
 from base64 import b64decode
 from time import time
 from urllib.parse import urljoin, urlparse
 
 from streamlink.exceptions import NoStreamsError, PluginError
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 from streamlink.utils.times import fromlocaltimestamp
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
 class OnePlusOneHLS(HLSStream):
@@ -34,8 +34,8 @@ class OnePlusOneHLS(HLSStream):
         self.api = OnePlusOneAPI(session, self_url)
 
     def _next_watch_timeout(self):
-        _next = fromlocaltimestamp(self.watch_timeout).isoformat(" ")
-        log.debug(f"next watch_timeout at {_next}")
+        when = fromlocaltimestamp(self.watch_timeout).isoformat(" ")
+        log.debug(f"next watch_timeout at {when}")
 
     def open(self):
         self._next_watch_timeout()
@@ -45,11 +45,11 @@ class OnePlusOneHLS(HLSStream):
     def url(self):
         if int(time()) >= self.watch_timeout:
             log.debug("Reloading HLS URL")
-            _hls_url = self.api.get_hls_url()
-            if not _hls_url:
+            hls_url = self.api.get_hls_url()
+            if not hls_url:
                 self.watch_timeout += 10
                 return self._url
-            parsed = urlparse(_hls_url)
+            parsed = urlparse(hls_url)
             path_parts = parsed.path.split("/")
             path_parts[-1] = self._first_path_chunklist
             self.watch_timeout = int(path_parts[2]) - 15
@@ -79,7 +79,7 @@ class OnePlusOneAPI:
         if not url_parts:
             raise NoStreamsError
 
-        log.trace(f"url_parts={url_parts}")
+        log.trace("url_parts=%s", url_parts)
         self.session.http.headers.update({"Referer": self.url})
 
         try:
@@ -95,7 +95,8 @@ class OnePlusOneAPI:
                     validate.parse_json(),
                     {"balancer": validate.url()},
                     validate.get("balancer"),
-                ))
+                ),
+            )
         except PluginError as err:
             log.error(f"ovva-player: {err}")
             return
@@ -111,17 +112,16 @@ class OnePlusOneAPI:
         )
 
 
-@pluginmatcher(re.compile(
-    r"https?://1plus1\.video/(?:\w{2}/)?tvguide/[^/]+/online",
-))
+@pluginmatcher(
+    re.compile(r"https?://1plus1\.video/(?:\w{2}/)?tvguide/[^/]+/online"),
+)
 class OnePlusOne(Plugin):
     def _get_streams(self):
         self.api = OnePlusOneAPI(self.session, self.url)
         url_hls = self.api.get_hls_url()
         if not url_hls:
             return
-        for q, s in HLSStream.parse_variant_playlist(self.session, url_hls).items():
-            yield q, OnePlusOneHLS(self.session, s.url, self_url=self.url)
+        return OnePlusOneHLS.parse_variant_playlist(self.session, url_hls, self_url=self.url)
 
 
 __plugin__ = OnePlusOne

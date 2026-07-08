@@ -9,21 +9,30 @@ $account Required by some streams
 $notes Timeshift is supported
 """
 
-import logging
+from __future__ import annotations
+
 import re
 from threading import Event
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
+from requests.exceptions import HTTPError
+
+from streamlink.exceptions import StreamError
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.plugin.api import useragents, validate
 from streamlink.plugin.api.websocket import WebsocketClient
-from streamlink.stream.hls import HLSStream, HLSStreamReader
+from streamlink.stream.hls import HLSStream, HLSStreamReader, HLSStreamWriter
 from streamlink.utils.parse import parse_json
-from streamlink.utils.times import hours_minutes_seconds
 from streamlink.utils.url import update_qsd
 
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from streamlink.stream.hls import HLSSegment
+
+
+log = getLogger(__name__)
 
 
 class NicoLiveWsClient(WebsocketClient):
@@ -33,10 +42,26 @@ class NicoLiveWsClient(WebsocketClient):
     opened: Event
     hls_stream_url: str
 
+    _SCHEMA_COOKIES = validate.Schema(
+        [
+            {
+                "domain": str,
+                "path": str,
+                "name": str,
+                "value": str,
+                "secure": bool,
+            },
+        ],
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.opened = Event()
         self.ready = Event()
+
+    def reconnect(self, *args, **kwargs):
+        self.ready.clear()
+        return super().reconnect(*args, **kwargs)
 
     def on_open(self, wsapp):
         super().on_open(wsapp)
@@ -49,22 +74,40 @@ class NicoLiveWsClient(WebsocketClient):
         msgtype = message.get("type")
         msgdata = message.get("data", {})
 
-        if msgtype == "ping":
-            self.send_pong()
+        if handler := self._MESSAGE_HANDLERS.get(msgtype):
+            handler(self, msgdata)
 
-        elif msgtype == "stream" and msgdata.get("protocol") == "hls" and msgdata.get("uri"):
-            self.hls_stream_url = msgdata.get("uri")
-            self.ready.set()
-            if self.opened.wait(self.STREAM_OPENED_TIMEOUT):
-                log.debug("Stream opened, keeping websocket connection alive")
-            else:
-                log.info("Closing websocket connection")
-                self.close()
+    def on_message_ping(self, _data):
+        self.send_pong()
 
-        elif msgtype == "disconnect":
-            reason = msgdata.get("reason", "Unknown reason")
-            log.info(f"Received disconnect message: {reason}")
+    def on_message_disconnect(self, data):
+        reason = data.get("reason", "Unknown reason")
+        log.info(f"Received disconnect message: {reason}")
+        self.close()
+
+    def on_message_stream(self, data):
+        if data.get("protocol") != "hls" or not data.get("uri"):
+            return
+
+        # cookies may be required by some HLS multivariant playlists
+        if cookies := data.get("cookies", []):
+            log.info("Applying HTTP session cookies from websocket data")
+            for cookie in self._SCHEMA_COOKIES.validate(cookies):
+                self.session.http.cookies.set(**cookie)
+
+        self.hls_stream_url = data.get("uri")
+        self.ready.set()
+        if self.opened.wait(self.STREAM_OPENED_TIMEOUT):
+            log.debug("Stream opened, keeping websocket connection alive")
+        else:
+            log.info("Closing websocket connection")
             self.close()
+
+    _MESSAGE_HANDLERS = {
+        "ping": on_message_ping,
+        "disconnect": on_message_disconnect,
+        "stream": on_message_stream,
+    }
 
     def send_playerversion(self):
         self.send_json({
@@ -97,8 +140,48 @@ class NicoLiveWsClient(WebsocketClient):
         self.send_json({"type": "keepSeat"})
 
 
+class NicoLiveHLSStreamWriter(HLSStreamWriter):
+    reader: NicoLiveHLSStreamReader
+    stream: NicoLiveHLSStream
+
+    def create_decryptor(self, *args, **kwargs):
+        try:
+            return super().create_decryptor(*args, **kwargs)
+        except StreamError as err:
+            if (
+                not (orig_err := err.__context__)
+                or not isinstance(orig_err, HTTPError)
+                or orig_err.response is None
+                or orig_err.response.status_code != 403
+            ):
+                raise
+
+            if not self.stream.wsclient.is_reconnecting.is_set():
+                log.warning("HLSSegment decryption key retrieval failed. Attempting to reconnect to websocket...")
+                self.stream.wsclient.reconnect()
+            if (
+                not self.stream.wsclient.reconnect_done.wait(self.stream.wsclient.STREAM_OPENED_TIMEOUT)
+                or not self.stream.wsclient.ready.wait(self.stream.wsclient.STREAM_OPENED_TIMEOUT)
+            ):  # fmt: skip
+                raise
+
+            # drop cached key
+            self.key_uri = None
+
+            return super().create_decryptor(*args, **kwargs)
+
+    def should_filter_segment(self, segment: HLSSegment) -> bool:
+        if "/blank/" in segment.uri:
+            return True
+
+        return super().should_filter_segment(segment)
+
+
 class NicoLiveHLSStreamReader(HLSStreamReader):
-    stream: "NicoLiveHLSStream"
+    __writer__ = NicoLiveHLSStreamWriter
+
+    writer: NicoLiveHLSStreamWriter
+    stream: NicoLiveHLSStream
 
     def open(self):
         self.stream.wsclient.opened.set()
@@ -113,13 +196,14 @@ class NicoLiveHLSStream(HLSStream):
     __reader__ = NicoLiveHLSStreamReader
     wsclient: NicoLiveWsClient
 
-    def set_wsclient(self, wsclient: NicoLiveWsClient):
+    def __init__(self, *args, wsclient: NicoLiveWsClient, **kwargs):
+        super().__init__(*args, **kwargs)
         self.wsclient = wsclient
 
 
-@pluginmatcher(re.compile(
-    r"https?://(?P<domain>live\d*\.nicovideo\.jp)/watch/(lv|co)\d+",
-))
+@pluginmatcher(
+    re.compile(r"https?://(?P<domain>live\d*\.nicovideo\.jp)/watch/(lv|co|user/)\d+"),
+)
 @pluginargument(
     "email",
     sensitive=True,
@@ -153,7 +237,7 @@ class NicoLiveHLSStream(HLSStream):
 )
 @pluginargument(
     "timeshift-offset",
-    type=hours_minutes_seconds,
+    type="hours_minutes_seconds",
     argument_name="niconico-timeshift-offset",
     metavar="[[XX:]XX:]XX | [XXh][XXm][XXs]",
     help="""
@@ -166,9 +250,7 @@ class NicoLive(Plugin):
     STREAM_READY_TIMEOUT = 6
     LOGIN_URL = "https://account.nicovideo.jp/login/redirector"
     LOGIN_URL_PARAMS = {
-        "show_button_twitter": 1,
-        "show_button_facebook": 1,
-        "next_url": "/",
+        "site": "niconico",
     }
 
     wsclient: NicoLiveWsClient
@@ -207,9 +289,12 @@ class NicoLive(Plugin):
         if offset and "timeshift" in wss_api_url:
             hls_stream_url = update_qsd(hls_stream_url, {"start": offset})
 
-        for quality, stream in NicoLiveHLSStream.parse_variant_playlist(self.session, hls_stream_url).items():
-            stream.set_wsclient(self.wsclient)
-            yield quality, stream
+        return NicoLiveHLSStream.parse_variant_playlist(
+            self.session,
+            hls_stream_url,
+            wsclient=self.wsclient,
+            ffmpeg_options={"copyts": True},
+        )
 
     def _get_hls_stream_url(self):
         log.debug(f"Waiting for permit (for at most {self.STREAM_READY_TIMEOUT} seconds)...")
@@ -221,12 +306,16 @@ class NicoLive(Plugin):
         return self.wsclient.hls_stream_url
 
     def get_data(self):
-        return self.session.http.get(self.url, schema=validate.Schema(
-            validate.parse_html(),
-            validate.xml_find(".//script[@id='embedded-data'][@data-props]"),
-            validate.get("data-props"),
-            validate.parse_json(),
-        ))
+        return self.session.http.get(
+            self.url,
+            encoding="utf-8",
+            schema=validate.Schema(
+                validate.parse_html(),
+                validate.xml_find(".//script[@id='embedded-data'][@data-props]"),
+                validate.get("data-props"),
+                validate.parse_json(),
+            ),
+        )
 
     @staticmethod
     def find_metadata(data):

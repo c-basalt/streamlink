@@ -83,10 +83,13 @@ class TestBuffer:
         assert buffer.read() == b"1" * 8192
         assert buffer.length == 0
 
-    @pytest.mark.parametrize("data", [
-        bytearray(b"0123456789"),
-        memoryview(bytearray(b"0123456789")),
-    ])
+    @pytest.mark.parametrize(
+        "data",
+        [
+            bytearray(b"0123456789"),
+            memoryview(bytearray(b"0123456789")),
+        ],
+    )
     def test_reuse_input(self, buffer: Buffer, data: bytearray):
         buffer.write(data)
         data[:] = b"9876543210"
@@ -188,7 +191,7 @@ class TestThreadedRingBuffer:
                 read = buffer.read(block=True, timeout=self.TIMEOUT)
 
         read = None
-        runnerthread = Thread(target=runner)
+        runnerthread = Thread(daemon=True, target=runner)
         runnerthread.start()
 
         buffer.write(b"0123")
@@ -217,7 +220,7 @@ class TestThreadedRingBuffer:
             with handshake():
                 buffer.write(b"01234567")
 
-        runnerthread = Thread(target=runner)
+        runnerthread = Thread(daemon=True, target=runner)
         runnerthread.start()
 
         handshake.go()
@@ -242,7 +245,7 @@ class TestThreadedRingBuffer:
             with handshake():
                 buffer.write(b"01234567")
 
-        runnerthread = Thread(target=runner)
+        runnerthread = Thread(daemon=True, target=runner)
         runnerthread.start()
 
         handshake.go()

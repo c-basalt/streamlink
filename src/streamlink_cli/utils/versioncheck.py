@@ -1,17 +1,18 @@
-import logging
+from __future__ import annotations
+
 import re
-from typing import Tuple
 
 import requests
 
 from streamlink import __version__ as streamlink_version
 from streamlink.cache import Cache
+from streamlink.logger import getLogger
 
 
-log = logging.getLogger("streamlink.cli")
+log = getLogger("streamlink.cli")
 
 
-def _parse_version(version: str) -> Tuple[int, int, int, int]:
+def _parse_version(version: str) -> tuple[int, int, int, int]:
     m = re.match(r"(\d+)\.(\d+)\.(\d+)(?:[+-](\d+))?", version)
     if not m:
         raise ValueError(f"Invalid version string: '{version}'")

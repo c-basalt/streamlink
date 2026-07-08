@@ -7,22 +7,22 @@ $account Required, additional subscription required by some streams
 
 import base64
 import json
-import logging
 import re
 from urllib.parse import urljoin, urlparse
 from uuid import uuid4
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, PluginError, pluginargument, pluginmatcher
 from streamlink.stream.hls import HLSStream
 from streamlink.utils.crypto import AES, SHA256, pad, unpad
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://(?:www\.)?ustvnow\.com/live/(?P<scode>\w+)/-(?P<id>\d+)",
-))
+@pluginmatcher(
+    re.compile(r"https?://(?:www\.)?ustvnow\.com/channel/live/(?P<chname>\w+)"),
+)
 @pluginargument(
     "username",
     required=True,
@@ -96,30 +96,28 @@ class USTVNow(Plugin):
         return self.cache.get("box_id")
 
     def get_token(self):
-        """
-        Get the token for USTVNow
-        :return: a valid token
-        """
-
         if not self._token:
             log.debug("Getting new session token")
-            res = self.session.http.get(self._token_url, params={
-                "tenant_code": self.TENANT_CODE,
-                "box_id": self.box_id,
-                "product": self.TENANT_CODE,
-                "device_id": 5,
-                "display_lang_code": "ENG",
-                "device_sub_type": "",
-                "timezone": "UTC",
-            })
+            res = self.session.http.get(
+                self._token_url,
+                params={
+                    "tenant_code": self.TENANT_CODE,
+                    "box_id": self.box_id,
+                    "product": self.TENANT_CODE,
+                    "device_id": 5,
+                    "display_lang_code": "ENG",
+                    "device_sub_type": "",
+                    "timezone": "UTC",
+                },
+            )
 
             data = res.json()
-            if data["status"]:
-                self._token = data["response"]["sessionId"]
-                log.debug("New token: {}".format(self._token))
-            else:
+            if not data["status"]:
                 log.error("Token acquisition failed: {details} ({detail})".format(**data["error"]))
                 raise PluginError("could not obtain token")
+
+            self._token = data["response"]["sessionId"]
+            log.debug(f"New token: {self._token}")
 
         return self._token
 
@@ -129,10 +127,12 @@ class USTVNow(Plugin):
             "data": self.encrypt_data(json.dumps(data).encode("utf8"), key, iv).decode("utf8"),
             "metadata": self.encrypt_data(json.dumps(metadata).encode("utf8"), key, iv).decode("utf8"),
         }
-        headers = {"box-id": self.box_id,
-                   "session-id": self.get_token(),
-                   "tenant-code": self.TENANT_CODE,
-                   "content-type": "application/json"}
+        headers = {
+            "box-id": self.box_id,
+            "session-id": self.get_token(),
+            "tenant-code": self.TENANT_CODE,
+            "content-type": "application/json",
+        }
         res = self.session.http.post(self._api_url + path, data=json.dumps(post_data), headers=headers).json()
         data = {k: v and json.loads(self.decrypt_data(v, key, iv)) for k, v in res.items()}
         return data
@@ -153,21 +153,20 @@ class USTVNow(Plugin):
         return resp["data"]["status"]
 
     def _get_streams(self):
-        """
-        Finds the streams from ustvnow.com.
-        """
-        if self.login(self.get_option("username"), self.get_option("password")):
-            path = urlparse(self.url).path.strip("/")
-            resp = self.api_request("send", {"path": path}, {"request": "page/stream"})
-            if resp["data"]["status"]:
-                for stream in resp["data"]["response"]["streams"]:
-                    if stream["keys"]["licenseKey"]:
-                        log.warning("Stream possibly protected by DRM")
-                    yield from HLSStream.parse_variant_playlist(self.session, stream["url"]).items()
-            else:
-                log.error("Could not find any streams: {code}: {message}".format(**resp["data"]["error"]))
-        else:
+        if not self.login(self.get_option("username"), self.get_option("password")):
             log.error("Failed to login, check username and password")
+            return
+
+        path = urlparse(self.url).path.strip("/")
+        resp = self.api_request("send", {"path": path}, {"request": "page/stream"})
+        if not resp["data"]["status"]:
+            log.error("Could not find any streams: {code}: {message}".format(**resp["data"]["error"]))
+            return
+
+        for stream in resp["data"]["response"]["streams"]:
+            if stream["keys"]["licenseKey"]:
+                log.warning("Stream possibly protected by DRM")
+            yield from HLSStream.parse_variant_playlist(self.session, stream["url"]).items()
 
 
 __plugin__ = USTVNow

@@ -5,10 +5,10 @@ Overview
 --------
 
 Streamlink is a :ref:`command-line utility <cli:Command-Line Interface>` which pipes video streams
-from various services into a video player, such as `VLC`_.
+from various services into a video player, such as `VLC`_ or `mpv`_.
 The main purpose of Streamlink is to avoid resource-heavy and unoptimized websites,
 while still allowing the user to enjoy various streamed content.
-There is also an :ref:`API <api_guide:API Guide>` available for developers who want access
+There is also a :ref:`Python API <api:API Reference>` available for developers who want access
 to the stream data.
 
 This project was forked from Livestreamer, which is no longer maintained.
@@ -28,29 +28,27 @@ This project was forked from Livestreamer, which is no longer maintained.
 :octicon:`law` Free software
     Simplified BSD license
 
+.. _VLC: https://www.videolan.org/
+.. _mpv: https://mpv.io/
+
 Features
 --------
 
-Streamlink is built upon a plugin system which allows support for new services
-to be easily added. Most of the big streaming services are supported, such as:
+Streamlink is built on top of a plugin system which allows support for new services to be added easily.
+Most of the popular streaming services are supported, such as
+`Twitch <https://www.twitch.tv/>`_, `YouTube <https://www.youtube.com/>`_, and many more.
 
-- `Twitch.tv <https://www.twitch.tv/>`_
-- `YouTube.com <https://www.youtube.com/>`_
-- `Livestream.com <https://livestream.com/>`_
-- `Dailymotion.com <https://www.dailymotion.com/live>`_
-
-... and many more. A full list of plugins currently included can be found
-on the :ref:`Plugins <plugins:Plugins>` page.
+A list of all plugins currently included can be found on the :ref:`plugins <plugins:Plugins>` page.
 
 Quickstart
 ----------
 
-The default behavior of Streamlink is to play back streams in the `VLC <https://www.videolan.org/>`_ player.
+The default behavior of Streamlink is to play back streams in the `VLC`_ player.
 
 .. sourcecode:: console
 
-    $ streamlink twitch.tv/day9tv best
-    [cli][info] Found matching plugin twitch for URL twitch.tv/day9tv
+    $ streamlink twitch.tv/CHANNEL best
+    [cli][info] Found matching plugin twitch for URL twitch.tv/CHANNEL
     [cli][info] Available streams: audio_only, 160p (worst), 360p, 480p, 720p, 720p60, 1080p60 (best)
     [cli][info] Opening stream: 1080p60 (hls)
     [cli][info] Starting player: vlc
@@ -63,12 +61,10 @@ User guide
 Streamlink is made up of two parts, a :ref:`cli <cli:Command-Line Interface>` and a library :ref:`API <api:API Reference>`.
 See their respective sections for more information on how to use them.
 
-Thank you
----------
 
-- `Github <https://github.com/>`_, for hosting the git repo, docs, release assets and providing CI tools
-- `Netlify <https://netlify.com/>`_, for hosting docs preview builds
-- `Whatismybrowser <https://whatismybrowser.com>`_, for the access to their user-agents API in our CI workflows
+.. only:: not no_acknowledgements
+
+    .. include:: acknowledgements.rst
 
 
 Table of contents
@@ -88,6 +84,6 @@ Table of contents
     api_guide
     api
     changelog
-    donate
+    support
     applications
     thirdparty

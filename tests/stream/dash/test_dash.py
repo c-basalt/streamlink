@@ -1,18 +1,31 @@
+from __future__ import annotations
+
+from contextlib import nullcontext
 from datetime import datetime, timezone
-from typing import List
+from typing import TYPE_CHECKING
 from unittest.mock import ANY, Mock, call
 
 import freezegun
 import pytest
-import requests_mock as rm
 from lxml.etree import ParseError
 
 from streamlink.exceptions import PluginError
-from streamlink.session import Streamlink
-from streamlink.stream.dash import MPD, DASHStream, DASHStreamWorker, MPDParsingError
+from streamlink.stream.dash import MPD, DASHSegment, DASHStream, DASHStreamWorker, MPDParsingError
 from streamlink.stream.dash.dash import log
 from streamlink.utils.parse import parse_xml as original_parse_xml
 from tests.resources import text, xml
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator, Iterator
+
+    import requests_mock as rm
+
+    from streamlink.session import Streamlink
+    from streamlink.stream.dash import DASHStreamReader
+
+
+does_not_raise = nullcontext()
 
 
 @pytest.fixture()
@@ -45,10 +58,13 @@ class TestDASHStreamParseManifest:
         monkeypatch.setattr("streamlink.stream.dash.dash.MPD", mpd)
         return mpd
 
-    @pytest.mark.parametrize(("se_parse_xml", "se_mpd"), [
-        (ParseError, None),
-        (None, MPDParsingError),
-    ])
+    @pytest.mark.parametrize(
+        ("se_parse_xml", "se_mpd"),
+        [
+            (ParseError, None),
+            (None, MPDParsingError),
+        ],
+    )
     def test_parse_fail(self, session: Streamlink, mpd: Mock, parse_xml: Mock, se_parse_xml, se_mpd):
         parse_xml.side_effect = se_parse_xml
         mpd.side_effect = se_mpd
@@ -68,7 +84,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p", "1080p"])
 
     def test_audio_only(self, session: Streamlink, mpd: Mock):
@@ -82,42 +98,45 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["a128k", "a256k"])
 
-    @pytest.mark.parametrize(("with_video_only", "with_audio_only", "expected"), [
-        pytest.param(
-            False,
-            False,
-            ["720p+a128k", "720p+a256k", "1080p+a128k", "1080p+a256k"],
-            id="Only muxed streams",
-        ),
-        pytest.param(
-            True,
-            False,
-            ["720p", "720p+a128k", "720p+a256k", "1080p", "1080p+a128k", "1080p+a256k"],
-            id="With video-only streams",
-        ),
-        pytest.param(
-            False,
-            True,
-            ["a128k", "a256k", "720p+a128k", "720p+a256k", "1080p+a128k", "1080p+a256k"],
-            id="With audio-only streams",
-        ),
-        pytest.param(
-            True,
-            True,
-            ["a128k", "a256k", "720p", "720p+a128k", "720p+a256k", "1080p", "1080p+a128k", "1080p+a256k"],
-            id="With video-only and audio-only streams",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        ("with_video_only", "with_audio_only", "expected"),
+        [
+            pytest.param(
+                False,
+                False,
+                ["720p+a128k", "720p+a256k", "1080p+a128k", "1080p+a256k"],
+                id="Only muxed streams",
+            ),
+            pytest.param(
+                True,
+                False,
+                ["720p", "720p+a128k", "720p+a256k", "1080p", "1080p+a128k", "1080p+a256k"],
+                id="With video-only streams",
+            ),
+            pytest.param(
+                False,
+                True,
+                ["a128k", "a256k", "720p+a128k", "720p+a256k", "1080p+a128k", "1080p+a256k"],
+                id="With audio-only streams",
+            ),
+            pytest.param(
+                True,
+                True,
+                ["a128k", "a256k", "720p", "720p+a128k", "720p+a256k", "1080p", "1080p+a128k", "1080p+a256k"],
+                id="With video-only and audio-only streams",
+            ),
+        ],
+    )
     def test_with_videoaudio_only(
         self,
         session: Streamlink,
         mpd: Mock,
         with_video_only: bool,
         with_audio_only: bool,
-        expected: List[str],
+        expected: list[str],
     ):
         adaptationset = Mock(
             contentProtections=None,
@@ -136,7 +155,7 @@ class TestDASHStreamParseManifest:
             with_video_only=with_video_only,
             with_audio_only=with_audio_only,
         )
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert list(streams.keys()) == expected
 
     def test_audio_single(self, session: Streamlink, mpd: Mock):
@@ -151,7 +170,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p", "1080p"])
 
     def test_audio_multi(self, session: Streamlink, mpd: Mock):
@@ -167,7 +186,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p+a128k", "1080p+a128k", "720p+a256k", "1080p+a256k"])
 
     def test_audio_multi_lang(self, session: Streamlink, mpd: Mock):
@@ -183,7 +202,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p", "1080p"])
         assert getattr(streams["720p"].audio_representation, "lang", None) == "en"
         assert getattr(streams["1080p"].audio_representation, "lang", None) == "en"
@@ -201,7 +220,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p", "1080p"])
         assert getattr(streams["720p"].audio_representation, "lang", None) == "eng"
         assert getattr(streams["1080p"].audio_representation, "lang", None) == "eng"
@@ -218,7 +237,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p", "1080p"])
         assert getattr(streams["720p"].audio_representation, "lang", None) == "en_no_voice"
         assert getattr(streams["1080p"].audio_representation, "lang", None) == "en_no_voice"
@@ -238,7 +257,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p", "1080p"])
         assert getattr(streams["720p"].audio_representation, "lang", None) == "es"
         assert getattr(streams["1080p"].audio_representation, "lang", None) == "es"
@@ -257,7 +276,7 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert sorted(streams.keys()) == sorted(["720p", "1080p", "1080p_alt", "1080p_alt2"])
 
     # Verify the fix for https://github.com/streamlink/streamlink/issues/4217
@@ -273,26 +292,63 @@ class TestDASHStreamParseManifest:
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert getattr(streams["1080p"].video_representation, "bandwidth", None) == pytest.approx(128.0)
         assert getattr(streams["1080p_alt"].video_representation, "bandwidth", None) == pytest.approx(64.0)
         assert getattr(streams["1080p_alt2"].video_representation, "bandwidth", None) == pytest.approx(32.0)
 
-    @pytest.mark.parametrize("adaptationset", [
-        pytest.param(
-            Mock(contentProtections="DRM", representations=[]),
-            id="ContentProtection on AdaptationSet",
-        ),
-        pytest.param(
-            Mock(contentProtections=None, representations=[Mock(id="1", contentProtections="DRM")]),
-            id="ContentProtection on Representation",
-        ),
-    ])
-    def test_contentprotection(self, session: Streamlink, mpd: Mock, adaptationset: Mock):
+    @pytest.mark.parametrize(
+        "adaptationset",
+        [
+            pytest.param(
+                Mock(contentProtections="DRM", representations=[]),
+                id="adaptationset",
+            ),
+            pytest.param(
+                Mock(contentProtections=None, representations=[Mock(id="1", contentProtections="DRM", height=1080)]),
+                id="representation",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("session", "raises", "logrecords"),
+        [
+            pytest.param(
+                {},
+                pytest.raises(PluginError, match=r" is protected by DRM$"),
+                [],
+                id="no-passthrough-encrypted",
+            ),
+            pytest.param(
+                {"stream-passthrough-encrypted": True},
+                does_not_raise,
+                [
+                    (
+                        "streamlink.stream.dash",
+                        "warning",
+                        "http://test/manifest.mpd is protected by DRM and won't be decrypted",
+                    ),
+                ],
+                id="passthrough-encrypted",
+            ),
+        ],
+        indirect=["session"],
+    )
+    def test_contentprotection(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        session: Streamlink,
+        raises: nullcontext,
+        adaptationset: Mock,
+        mpd: Mock,
+        logrecords: list,
+    ):
         mpd.return_value = Mock(periods=[Mock(adaptationSets=[adaptationset])])
 
-        with pytest.raises(PluginError):
+        with raises:
             DASHStream.parse_manifest(session, "http://test/manifest.mpd")
+
+        assert [(record.name, record.levelname, record.message) for record in caplog.records] == logrecords
 
     @pytest.mark.nomockedhttprequest()
     def test_string(self, session: Streamlink, mpd: Mock, parse_xml: Mock):
@@ -309,11 +365,43 @@ class TestDASHStreamParseManifest:
     #       This test currently achieves nothing... (manifest fixture added in 7aada92)
     def test_segments_number_time(self, session: Streamlink, mpd: Mock):
         with xml("dash/test_9.mpd") as mpd_xml:
-            mpd.return_value = MPD(mpd_xml, base_url="http://test", url="http://test/manifest.mpd")
+            mpd.return_value = MPD(mpd_xml, base_url="http://test/manifest.mpd", url="http://test/manifest.mpd")
 
         streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd")
-        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test")]
+        assert mpd.call_args_list == [call(ANY, url="http://test/manifest.mpd", base_url="http://test/manifest.mpd")]
         assert list(streams.keys()) == ["480p"]
+
+    @pytest.mark.parametrize(
+        ("period", "raises"),
+        [
+            pytest.param(0, does_not_raise, id="index-0"),
+            pytest.param(1, does_not_raise, id="index-1"),
+            pytest.param(2, does_not_raise, id="index-2"),
+            pytest.param("p1", does_not_raise, id="id-p1"),
+            pytest.param("p2", does_not_raise, id="id-p2"),
+            pytest.param(3, pytest.raises(PluginError, match=r"^DASH period 3 not found\."), id="error-index"),
+            pytest.param("p3", pytest.raises(PluginError, match=r"^DASH period 'p3' not found\."), id="error-id"),
+        ],
+    )
+    def test_period_selection(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        session: Streamlink,
+        mpd: Mock,
+        period: int | str,
+        raises: nullcontext,
+    ):
+        caplog.set_level(1, "streamlink")
+
+        with xml("dash/test_period_selection.mpd") as mpd_xml:
+            mpd.return_value = MPD(mpd_xml, base_url="http://test/manifest.mpd", url="http://test/manifest.mpd")
+
+        with raises:
+            streams = DASHStream.parse_manifest(session, "http://test/manifest.mpd", period=period)
+            assert streams
+
+        records = [(record.name, record.levelname, record.message) for record in caplog.records]
+        assert ("streamlink.stream.dash", "debug", "Available DASH periods: 0, 1 (id='p1'), 2 (id='p2')") in records
 
 
 class TestDASHStreamOpen:
@@ -326,6 +414,7 @@ class TestDASHStreamOpen:
     @pytest.fixture()
     def muxer(self, monkeypatch: pytest.MonkeyPatch):
         muxer = Mock()
+        muxer.is_usable.return_value = True
         monkeypatch.setattr("streamlink.stream.dash.dash.FFMPEGMuxer", muxer)
         return muxer
 
@@ -334,7 +423,7 @@ class TestDASHStreamOpen:
         stream = DASHStream(session, Mock(), rep_video)
         stream.open()
 
-        assert reader.call_args_list == [call(stream, rep_video, timestamp)]
+        assert reader.call_args_list == [call(stream, rep_video, timestamp, name="video")]
         assert reader().open.call_count == 1
         assert muxer.call_args_list == []
 
@@ -345,12 +434,15 @@ class TestDASHStreamOpen:
         mock_reader_video = Mock()
         mock_reader_audio = Mock()
         readers = {rep_video: mock_reader_video, rep_audio: mock_reader_audio}
-        reader.side_effect = lambda _stream, _representation, _timestamp: readers[_representation]
+        reader.side_effect = lambda _stream, _representation, _timestamp, *_, **__: readers[_representation]
 
         stream = DASHStream(session, Mock(), rep_video, rep_audio)
         stream.open()
 
-        assert reader.call_args_list == [call(stream, rep_video, timestamp), call(stream, rep_audio, timestamp)]
+        assert reader.call_args_list == [
+            call(stream, rep_video, timestamp, name="video"),
+            call(stream, rep_audio, timestamp, name="audio"),
+        ]
         assert mock_reader_video.open.call_count == 1
         assert mock_reader_audio.open.call_count == 1
         assert muxer.call_args_list == [call(session, mock_reader_video, mock_reader_audio, copyts=True)]
@@ -370,11 +462,14 @@ class TestDASHStreamWorker:
         return mock
 
     @pytest.fixture()
-    def segments(self) -> List[Mock]:
+    def segments(self) -> list[DASHSegment]:
         return [
-            Mock(url="init_segment"),
-            Mock(url="first_segment"),
-            Mock(url="second_segment"),
+            DASHSegment(uri="init_segment", num=-1, duration=0.0),
+            DASHSegment(uri="first_segment", num=0, duration=2.0),
+            DASHSegment(uri="second_segment", num=1, duration=3.0),
+            DASHSegment(uri="third_segment", num=2, duration=5.0),
+            DASHSegment(uri="fourth_segment", num=3, duration=8.0),
+            DASHSegment(uri="fifth_segment", num=4, duration=13.0),
         ]
 
     @pytest.fixture()
@@ -406,68 +501,151 @@ class TestDASHStreamWorker:
         return mpd.periods[0].adaptationSets[0].representations[0]
 
     @pytest.fixture()
-    def worker(self, timestamp: datetime, mpd: Mock):
-        stream = Mock(
-            mpd=mpd,
-            period=0,
-            args={},
-        )
-        reader = Mock(
+    def stream(self, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, session: Streamlink, mpd: Mock):
+        options = getattr(request, "param", {})
+
+        monkeypatch.setattr(session.http, "request", Mock())
+        monkeypatch.setattr(session.http, "xml", Mock())
+
+        return DASHStream(session, mpd, **options)
+
+    @pytest.fixture()
+    def reader(self, session: Streamlink, stream: DASHStream, timestamp: datetime):
+        return Mock(
+            session=session,
             stream=stream,
             ident=(None, None, "1"),
             timestamp=timestamp,
         )
-        worker = DASHStreamWorker(reader)
 
-        return worker
+    @pytest.fixture()
+    def worker(self, reader: DASHStreamReader):
+        return DASHStreamWorker(reader)
+
+    @staticmethod
+    def _iter_segments(iter_segments: Generator[DASHSegment, bool, None]) -> Iterator[DASHSegment]:
+        queued: bool | None = None
+        try:  # noqa: PLW0717
+            while True:
+                if queued is None:
+                    yield next(iter_segments)
+                else:
+                    yield iter_segments.send(queued)
+                queued = True
+        except StopIteration:
+            pass
+
+    @staticmethod
+    def _next_segments(worker: DASHStreamWorker, segment_iter: Iterator[DASHSegment], num: int) -> list[DASHSegment]:
+        items = []
+        for _ in range(num):
+            segment = next(segment_iter)
+            # fake worker.run() implementation
+            worker.check_sequence_gap(segment)
+            worker.sequence = segment.num + 1
+            items.append(segment)
+
+        return items
 
     def test_dynamic_reload(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
         timestamp: datetime,
         worker: DASHStreamWorker,
         representation: Mock,
-        segments: List[Mock],
+        segments: list[DASHSegment],
         mpd: Mock,
     ):
+        caplog.set_level("INFO", "streamlink")
+
         mpd.dynamic = True
         mpd.type = "dynamic"
         monkeypatch.setattr("streamlink.stream.dash.dash.MPD", lambda *args, **kwargs: mpd)
 
-        segment_iter = worker.iter_segments()
+        segment_iter = self._iter_segments(worker.iter_segments())
 
-        representation.segments.return_value = segments[:1]
-        assert next(segment_iter) is segments[0]
-        assert representation.segments.call_args_list == [call(init=True, timestamp=timestamp)]
+        representation.segments.return_value = segments[:2]
+        assert self._next_segments(worker, segment_iter, 2) == segments[:2]
+        assert representation.segments.call_args_list == [call(sequence=-1, init=True, timestamp=timestamp)]
         assert not worker._wait.is_set()
+        assert [(record.name, record.levelname, record.message) for record in caplog.records] == []
 
         representation.segments.reset_mock()
-        representation.segments.return_value = segments[1:]
-        assert [next(segment_iter), next(segment_iter)] == segments[1:]
-        assert representation.segments.call_args_list == [call(), call(init=False, timestamp=None)]
+        representation.segments.return_value = segments[3:]
+        assert self._next_segments(worker, segment_iter, 3) == segments[3:]
+        assert representation.segments.call_args_list == [call(), call(sequence=1, init=False, timestamp=None)]
         assert not worker._wait.is_set()
+        assert [(record.name, record.levelname, record.message) for record in caplog.records] == [
+            (
+                "streamlink.stream.segmented",
+                "warning",
+                "Sequence gap of 1 segment at position 1. This is unsupported and will result in incoherent output data.",
+            ),
+        ]
+
+    def test_dynamic_reload_missing_representation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        timestamp: datetime,
+        worker: DASHStreamWorker,
+        representation: Mock,
+        segments: list[DASHSegment],
+        mpd: Mock,
+    ):
+        caplog.set_level("INFO", "streamlink")
+
+        mpd.dynamic = True
+        mpd.type = "dynamic"
+        monkeypatch.setattr("streamlink.stream.dash.dash.MPD", lambda *args, **kwargs: mpd)
+
+        segment_iter = self._iter_segments(worker.iter_segments())
+
+        representation.segments.return_value = segments[:2]
+        assert self._next_segments(worker, segment_iter, 2) == segments[:2]
+        assert representation.segments.call_args_list == [call(sequence=-1, init=True, timestamp=timestamp)]
+        assert not worker.closed
+        assert not worker._wait.is_set()
+        assert [(record.name, record.levelname, record.message) for record in caplog.records] == []
+
+        mpd.get_representation.return_value = None
+        with pytest.raises(StopIteration):
+            self._next_segments(worker, segment_iter, 1)
+        assert worker.closed
+        assert worker._wait.is_set()
+        assert [(record.name, record.levelname, record.message) for record in caplog.records] == [
+            (
+                "streamlink.stream.dash",
+                "error",
+                "Failed to find matching DASH representation: (None, None, '1')",
+            ),
+        ]
 
     def test_static(
         self,
         worker: DASHStreamWorker,
         timestamp: datetime,
         representation: Mock,
-        segments: List[Mock],
+        segments: list[DASHSegment],
         mpd: Mock,
     ):
         mpd.dynamic = False
         mpd.type = "static"
 
         representation.segments.return_value = segments
-        assert list(worker.iter_segments()) == segments
-        assert representation.segments.call_args_list == [call(init=True, timestamp=timestamp)]
+        assert list(self._iter_segments(worker.iter_segments())) == segments
+        assert representation.segments.call_args_list == [call(sequence=-1, init=True, timestamp=timestamp)]
         assert worker._wait.is_set()
 
     # Verify the fix for https://github.com/streamlink/streamlink/issues/2873
-    @pytest.mark.parametrize("duration", [
-        0,
-        204.32,
-    ])
+    @pytest.mark.parametrize(
+        "period_duration",
+        [
+            0,
+            204.32,
+        ],
+    )
     def test_static_refresh_wait(
         self,
         timestamp: datetime,
@@ -475,16 +653,64 @@ class TestDASHStreamWorker:
         mock_time: Mock,
         worker: DASHStreamWorker,
         representation: Mock,
-        segments: List[Mock],
+        segments: list[DASHSegment],
         mpd: Mock,
-        duration: float,
+        period_duration: float,
     ):
         mpd.dynamic = False
         mpd.type = "static"
-        mpd.periods[0].duration.total_seconds.return_value = duration
+        mpd.periods[0].duration.total_seconds.return_value = period_duration
 
         representation.segments.return_value = segments
-        assert list(worker.iter_segments()) == segments
-        assert representation.segments.call_args_list == [call(init=True, timestamp=timestamp)]
+        assert list(self._iter_segments(worker.iter_segments())) == segments
+        assert representation.segments.call_args_list == [call(sequence=-1, init=True, timestamp=timestamp)]
         assert mock_wait.call_args_list == [call(5)]
         assert worker._wait.is_set()
+
+    @pytest.mark.parametrize(
+        ("stream", "session"),
+        [
+            pytest.param(
+                {"duration": 5.0},
+                {},
+                id="duration keyword",
+            ),
+            pytest.param(
+                {},
+                {"stream-segmented-duration": 5.0},
+                id="stream-segmented-duration session option",
+            ),
+            pytest.param(
+                {"duration": 5.0},
+                {"stream-segmented-duration": 2.0},
+                id="duration keyword priority",
+            ),
+        ],
+        indirect=["stream", "session"],
+    )
+    def test_duration(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        reader: Mock,
+        worker: DASHStreamWorker,
+        timestamp: datetime,
+        representation: Mock,
+        segments: list[DASHSegment],
+        mpd: Mock,
+        stream: DASHStream,
+        session: Streamlink,
+    ):
+        caplog.set_level("INFO", "streamlink")
+
+        mpd.dynamic = False
+        mpd.type = "static"
+
+        representation.segments.return_value = segments
+        worker.run()
+
+        assert [call_arg.args[0] for call_arg in reader.writer.put.call_args_list] == [*segments[0:3], None]
+        assert representation.segments.call_args_list == [call(sequence=-1, init=True, timestamp=timestamp)]
+        assert worker._wait.is_set()
+        assert [(record.name, record.levelname, record.message) for record in caplog.records] == [
+            ("streamlink.stream.segmented", "info", "Stopping stream early after 5.00s"),
+        ]

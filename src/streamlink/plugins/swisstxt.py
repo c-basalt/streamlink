@@ -6,30 +6,27 @@ $type live
 $region Switzerland
 """
 
-import logging
 import re
 from urllib.parse import parse_qsl, urlparse, urlunparse
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(r"""
-    https?://(?:
-        live\.(rsi)\.ch/|
-        (?:www\.)?(srf)\.ch/sport/resultcenter
-    )
-""", re.VERBOSE))
+@pluginmatcher(
+    re.compile(r"https?://(?:live\.(rsi)\.ch/|(?:www\.)?(srf)\.ch/sport/resultcenter)"),
+)
 class Swisstxt(Plugin):
     api_url = "http://event.api.swisstxt.ch/v1/stream/{site}/byEventItemIdAndType/{id}/HLS"
 
     def get_stream_url(self, event_id):
         site = self.match.group(1) or self.match.group(2)
         api_url = self.api_url.format(id=event_id, site=site.upper())
-        log.debug("Calling API: {0}".format(api_url))
+        log.debug(f"Calling API: {api_url}")
 
         stream_url = self.session.http.get(api_url).text.strip("\"'")
 
@@ -43,9 +40,7 @@ class Swisstxt(Plugin):
             return
 
         stream_url, params = self.get_stream_url(event_id)
-        return HLSStream.parse_variant_playlist(self.session,
-                                                stream_url,
-                                                params=params)
+        return HLSStream.parse_variant_playlist(self.session, stream_url, params=params)
 
 
 __plugin__ = Swisstxt

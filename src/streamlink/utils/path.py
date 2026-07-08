@@ -1,13 +1,18 @@
-from pathlib import Path
+from __future__ import annotations
+
 from shutil import which
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def resolve_executable(
-    custom: Optional[Union[str, Path]] = None,
-    names: Optional[List[str]] = None,
-    fallbacks: Optional[List[Union[str, Path]]] = None,
-) -> Optional[Union[str, Path]]:
+    custom: str | Path | None = None,
+    names: list[str] | None = None,
+    fallbacks: list[str | Path] | None = None,
+) -> str | Path | None:
     if custom:
         return which(custom)
 

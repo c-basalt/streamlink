@@ -1,10 +1,7 @@
-# TODO: trio>0.22 release: remove __future__ import (generic memorychannels)
 from __future__ import annotations
 
-from typing import List
-
 import trio
-from trio_websocket import CloseReason, ConnectionClosed  # type: ignore[import]
+from trio_websocket import CloseReason, ConnectionClosed
 
 
 class FakeWebsocketConnection:
@@ -13,7 +10,7 @@ class FakeWebsocketConnection:
 
     def __init__(self) -> None:
         self.sender, self.receiver = trio.open_memory_channel(10)
-        self.sent: List[str] = []
+        self.sent: list[str] = []
         self.closed: bool = False
 
     async def send_message(self, message: str):

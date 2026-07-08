@@ -10,12 +10,12 @@ $metadata title
 """
 
 import base64
-import logging
 import random
 import re
 import time
 from urllib.parse import urlparse
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
@@ -23,29 +23,36 @@ from streamlink.utils.crypto import decrypt_openssl
 from streamlink.utils.parse import parse_qsd
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://ott\.streann\.com/s(?:treaming|-secure)/player\.html",
-))
-@pluginmatcher(re.compile(r"""
-    https?://(?:www\.)?(?:
-        centroecuador\.ec
-        |
-        columnaestilos\.com
-        |
-        crc\.cr/estaciones/
-        |
-        evtv\.online/noticias-de-venezuela/
-        |
-        telecuracao\.com
-    )
-""", re.VERBOSE))
+@pluginmatcher(
+    name="centroecuador",
+    pattern=re.compile(r"https?://(?:www\.)?centroecuador\.ec"),
+)
+@pluginmatcher(
+    name="columnaestilos",
+    pattern=re.compile(r"https?://(?:www\.)?columnaestilos\.com"),
+)
+@pluginmatcher(
+    name="crc",
+    pattern=re.compile(r"https?://(?:www\.)?crc\.cr/estaciones/"),
+)
+@pluginmatcher(
+    name="evtv",
+    pattern=re.compile(r"https?://(?:www\.)?evtv\.online/noticias-de-venezuela/"),
+)
+@pluginmatcher(
+    name="telecuracao",
+    pattern=re.compile(r"https?://(?:www\.)?telecuracao\.com"),
+)
+@pluginmatcher(
+    name="streann",
+    pattern=re.compile(r"https?://ott\.streann\.com/s(?:treaming|-secure)/player\.html"),
+)
 @pluginargument(
     "url",
     metavar="URL",
-    type=str,
     help="Source URL where the iframe is located, only required for direct URLs of ott.streann.com",
 )
 class Streann(Plugin):
@@ -71,7 +78,8 @@ class Streann(Plugin):
         """
         if self._device_id is None:
             self._device_id = "".join(
-                random.choice("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(50))
+                random.choice("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(50)
+            )
         return self._device_id
 
     @property
@@ -88,8 +96,10 @@ class Streann(Plugin):
 
     def get_token(self, **config):
         log.debug("get_token")
-        pdata = dict(arg1=base64.b64encode(self._domain.encode("utf8")),
-                     arg2=base64.b64encode(self.time.encode("utf8")))
+        pdata = dict(
+            arg1=base64.b64encode(self._domain.encode("utf8")),  # type: ignore
+            arg2=base64.b64encode(self.time.encode("utf8")),
+        )
 
         headers = {
             "Referer": self.url,
@@ -107,28 +117,34 @@ class Streann(Plugin):
             log.error(f"self._domain might be invalid - {self._domain}")
             return
 
-        data = self.session.http.json(res, schema=validate.Schema({
-            "token": str,
-            validate.optional("name"): str,
-            validate.optional("webPlayer"): {
-                validate.optional("id"): str,
+        data = self.session.http.json(
+            res,
+            schema=validate.Schema({
+                "token": str,
                 validate.optional("name"): str,
-                validate.optional("type"): str,
-                validate.optional("allowedDomains"): [str],
-            },
-        }))
-        log.trace(f"{data!r}")
+                validate.optional("webPlayer"): {
+                    validate.optional("id"): str,
+                    validate.optional("name"): str,
+                    validate.optional("type"): str,
+                    validate.optional("allowedDomains"): [str],
+                },
+            }),
+        )
+        log.trace("%r", data)
         self.title = data.get("name")
         return data["token"]
 
     def _get_streams(self):
-        if not self.matches[0]:
+        if not self.matches["streann"]:
             self._domain = urlparse(self.url).netloc
-            iframes = self.session.http.get(self.url, schema=validate.Schema(
-                validate.parse_html(),
-                validate.xml_findall(".//iframe[@src]"),
-                validate.filter(lambda elem: urlparse(elem.attrib.get("src")).netloc == "ott.streann.com"),
-            ))
+            iframes = self.session.http.get(
+                self.url,
+                schema=validate.Schema(
+                    validate.parse_html(),
+                    validate.xml_findall(".//iframe[@src]"),
+                    validate.filter(lambda elem: urlparse(elem.attrib.get("src")).netloc == "ott.streann.com"),
+                ),
+            )
             if not iframes:
                 log.error("Could not find 'ott.streann.com' iframe")
                 return
@@ -151,18 +167,13 @@ class Streann(Plugin):
             log.debug("Found passphrase")
             params = decrypt_openssl(data, passphrase)
             config = parse_qsd(params.decode("utf8"))
-            log.trace(f"config: {config!r}")
+            log.trace("config: %r", config)
             token = self.get_token(**config)
             if not token:
                 return
-            hls_url = self.stream_url.format(time=self.time,
-                                             deviceId=self.device_id,
-                                             token=token,
-                                             **config)
-            log.debug("URL={0}".format(hls_url))
-            return HLSStream.parse_variant_playlist(self.session,
-                                                    hls_url,
-                                                    acceptable_status=(200, 403, 404, 500))
+            hls_url = self.stream_url.format(time=self.time, deviceId=self.device_id, token=token, **config)
+            log.debug(f"URL={hls_url}")
+            return HLSStream.parse_variant_playlist(self.session, hls_url, acceptable_status=(200, 403, 404, 500))
 
 
 __plugin__ = Streann

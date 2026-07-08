@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import shlex
-from typing import List, Optional, Tuple
+from typing import Any
 
 from setuptools import build_meta as _build_meta
 
@@ -15,8 +17,8 @@ from setuptools.command.egg_info import egg_info as _egg_info
 
 
 def get_requires_for_build_wheel(  # type: ignore[no-redef]
-    config_settings: Optional[dict] = None,
-) -> List[str]:  # pragma: no cover
+    config_settings: dict | None = None,
+) -> list[str]:  # pragma: no cover
     # Streamlink publishes three wheels on PyPI: the generic "any" wheel, the "win32" wheel and the "win-amd64" wheel:
     # The Windows-wheels are special, because they include a "gui_scripts" entry point, which is used by the `pip` frontend
     # to generate the "streamlinkw" launcher, which doesn't open a terminal window when launching it from a GUI application.
@@ -32,7 +34,13 @@ def get_requires_for_build_wheel(  # type: ignore[no-redef]
     #
     # As a consequence of this, we need to override the build-backend and the `get_requires_for_build_wheel()` hook, so that
     # we can filter out arguments which are not relevant to the `egg_info` command.
-    _filter_cmd_option_args(config_settings, "--build-option", _egg_info.user_options)
+    _filter_cmd_option_args(
+        config_settings,
+        "--build-option",
+        # types-setuptools-70.3.0.20240710 has the wrong type for
+        #   setuptools.command.egg_info.user_options (setuptools._distutils.cmd.Command.user_options)
+        _egg_info.user_options,  # type: ignore[arg-type, ty:invalid-argument-type]
+    )
 
     return _build_meta.get_requires_for_build_wheel(config_settings)
 
@@ -41,9 +49,11 @@ def get_requires_for_build_wheel(  # type: ignore[no-redef]
 
 
 def _filter_cmd_option_args(
-    config_settings: Optional[dict],
+    config_settings: dict | None,
     key: str,
-    options: List[Tuple[str, Optional[str], str]],
+    # https://github.com/pypa/setuptools/blob/v71.1.0/setuptools/_distutils/fancy_getopt.py#L47-L54
+    # https://github.com/pypa/setuptools/blob/v71.1.0/setuptools/_distutils/fancy_getopt.py#L152-L156
+    options: list[tuple[str, str | None, str] | tuple[str, str | None, str, Any]],
 ) -> None:
     """Filter out args which are not recognized by a specific command and its options"""
 
@@ -59,6 +69,8 @@ def _filter_cmd_option_args(
             val_next = False
             result.append(item)
             continue
+        full: str
+        shorthand: str | None
         for full, shorthand, *_ in options:
             is_boolean = full[-1] != "="
             is_shorthand = shorthand is not None and item == f"-{shorthand}"
@@ -69,7 +81,7 @@ def _filter_cmd_option_args(
             if (
                 is_boolean and (is_shorthand or item == f"--{full}")
                 or not is_boolean and item.startswith(f"--{full}")
-            ):
+            ):  # fmt: skip
                 result.append(item)
                 break
 

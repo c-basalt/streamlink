@@ -85,15 +85,15 @@ class RingBuffer(Buffer):
         self.event_used = Event()
 
     def _check_events(self):
-        if self.length > 0:
-            self.event_used.set()
-        else:
-            self.event_used.clear()
-
         if self.is_full:
             self.event_free.clear()
         else:
             self.event_free.set()
+
+        if self.length > 0:
+            self.event_used.set()
+        else:
+            self.event_used.clear()
 
     def _read(self, size=-1):
         with self.buffer_lock:
@@ -127,7 +127,7 @@ class RingBuffer(Buffer):
                 write_len = min(self.free, data_left)
                 written = data_total - data_left
 
-                Buffer.write(self, data[written:written + write_len])
+                Buffer.write(self, data[written : written + write_len])
                 data_left -= write_len
 
                 self._check_events()

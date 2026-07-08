@@ -7,132 +7,151 @@ $metadata title
 $region France, Andorra, Monaco
 """
 
-import logging
 import re
 from urllib.parse import urlparse
 
-from streamlink.plugin import Plugin, PluginError, pluginmatcher
+from streamlink.logger import getLogger
+from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import useragents, validate
 from streamlink.stream.dash import DASHStream
 from streamlink.stream.hls import HLSStream
 from streamlink.utils.times import localnow
-from streamlink.utils.url import update_qsd
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(r"""
-    https?://(?:
-        (?:www\.)?france\.tv/
-        |
-        (?:.+\.)?francetvinfo\.fr/
-    )
-""", re.VERBOSE))
+@pluginmatcher(
+    name="francetv",
+    pattern=re.compile(r"https?://(?:[\w-]+\.)?france\.tv/"),
+)
+@pluginmatcher(
+    name="francetvinfofr",
+    pattern=re.compile(r"https?://(?:[\w-]+\.)?francetvinfo\.fr/"),
+)
 class Pluzz(Plugin):
     PLAYER_VERSION = "5.51.35"
-    GEO_URL = "https://geoftv-a.akamaihd.net/ws/edgescape.json"
-    API_URL = "https://player.webservices.francetelevisions.fr/v1/videos/{video_id}"
+
+    _URL_GEO = "https://geoftv-a.akamaihd.net/ws/edgescape.json"
+    _URL_API = "https://k7.ftven.fr/videos/{video_id}"
+
+    _SCHEMA_VIDEOID_FRANCETV = validate.Schema(
+        validate.regex(
+            re.compile(r"""\\"options\\":\{\\"id\\":\\"(?P<video_id>[\dA-Fa-f-]{36})\\","""),
+            method="search",
+        ),
+        validate.get("video_id"),
+    )
+    _SCHEMA_VIDEOID_FRANCETVINFOFR = validate.Schema(
+        validate.parse_html(),
+        validate.any(
+            # overseas live stream
+            validate.all(
+                validate.xml_xpath_string(""".//script[contains(text(),'"data":{content:{player:{id:"')][1]/text()"""),
+                str,
+                validate.regex(
+                    re.compile(r""""data":\{content:\{player:\{id:"(?P<video_id>[\dA-Fa-f-]{36})","""),
+                    method="search",
+                ),
+                validate.get("video_id"),
+            ),
+            # news article
+            validate.all(
+                validate.xml_xpath_string(".//*[@id][contains(@class,'francetv-player-wrapper')][1]/@id"),
+                str,
+            ),
+            # videos
+            validate.all(
+                validate.xml_xpath_string(".//*[@data-id][contains(@class,'magneto')][1]/@data-id"),
+                str,
+            ),
+            validate.transform(lambda *_: None),
+        ),
+    )
+
+    def _get_video_id(self):
+        return self.session.http.get(
+            self.url,
+            schema=self._SCHEMA_VIDEOID_FRANCETV if self.matches["francetv"] else self._SCHEMA_VIDEOID_FRANCETVINFOFR,
+        )
 
     def _get_streams(self):
         self.session.http.headers.update({
             "User-Agent": useragents.CHROME,
         })
-        CHROME_VERSION = re.compile(r"Chrome/(\d+)").search(useragents.CHROME).group(1)
+        if not (m := re.compile(r"Chrome/(\d+)").search(useragents.CHROME)):
+            return
+        CHROME_VERSION = m.group(1)
 
-        # Retrieve geolocation data
-        country_code = self.session.http.get(self.GEO_URL, schema=validate.Schema(
-            validate.parse_json(),
-            {"reponse": {"geo_info": {
-                "country_code": str,
-            }}},
-            validate.get(("reponse", "geo_info", "country_code")),
-        ))
-        log.debug(f"Country: {country_code}")
-
-        # Retrieve URL page and search for video ID
-        video_id = None
-        try:
-            video_id = self.session.http.get(self.url, schema=validate.Schema(
-                validate.parse_html(),
-                validate.any(
-                    validate.all(
-                        validate.xml_xpath_string(".//script[contains(text(),'window.FTVPlayerVideos')][1]/text()"),
-                        str,
-                        validate.regex(re.compile(
-                            r"window\.FTVPlayerVideos\s*=\s*(?P<json>\[{.+?}])\s*;\s*(?:$|var)",
-                            re.DOTALL,
-                        )),
-                        validate.get("json"),
-                        validate.parse_json(),
-                        [{"videoId": str}],
-                        validate.get((0, "videoId")),
-                    ),
-                    validate.all(
-                        validate.xml_xpath_string(".//script[contains(text(),'new Magnetoscope')][1]/text()"),
-                        str,
-                        validate.regex(re.compile(
-                            r"""player\.load\s*\(\s*{\s*src\s*:\s*(?P<q>['"])(?P<video_id>.+?)(?P=q)\s*}\s*\)\s*;""",
-                        )),
-                        validate.get("video_id"),
-                    ),
-                    validate.all(
-                        validate.xml_xpath_string(".//*[@id][contains(@class,'francetv-player-wrapper')][1]/@id"),
-                        str,
-                    ),
-                    validate.all(
-                        validate.xml_xpath_string(".//*[@data-id][contains(@class,'magneto')][1]/@data-id"),
-                        str,
-                    ),
-                ),
-            ))
-        except PluginError:
-            pass
-        if not video_id:
+        if not (video_id := self._get_video_id()):
             return
         log.debug(f"Video ID: {video_id}")
 
-        api_url = update_qsd(self.API_URL.format(video_id=video_id), {
-            "country_code": country_code,
-            "w": 1920,
-            "h": 1080,
-            "player_version": self.PLAYER_VERSION,
-            "domain": urlparse(self.url).netloc,
-            "device_type": "mobile",
-            "browser": "chrome",
-            "browser_version": CHROME_VERSION,
-            "os": "ios",
-            "gmt": localnow().strftime("%z"),
-        })
-        video_format, token_url, url, self.title = self.session.http.get(api_url, schema=validate.Schema(
-            validate.parse_json(),
-            {
-                "video": {
-                    "workflow": validate.any("token-akamai", "dai"),
-                    "format": validate.any("dash", "hls"),
-                    "token": validate.url(),
-                    "url": validate.url(),
+        # Retrieve geolocation data
+        country_code = self.session.http.get(
+            self._URL_GEO,
+            schema=validate.Schema(
+                validate.parse_json(),
+                {
+                    "reponse": {
+                        "geo_info": {
+                            "country_code": str,
+                        },
+                    },
                 },
-                "meta": {
-                    "title": str,
-                },
-            },
-            validate.union_get(
-                ("video", "format"),
-                ("video", "token"),
-                ("video", "url"),
-                ("meta", "title"),
+                validate.get(("reponse", "geo_info", "country_code")),
             ),
-        ))
+        )
+        log.debug(f"Country: {country_code}")
 
-        data_url = update_qsd(token_url, {
-            "url": url,
-        })
-        video_url = self.session.http.get(data_url, schema=validate.Schema(
-            validate.parse_json(),
-            {"url": validate.url()},
-            validate.get("url"),
-        ))
+        video_format, token_url, url, self.title = self.session.http.get(
+            self._URL_API.format(video_id=video_id),
+            params={
+                "country_code": country_code,
+                "w": 1920,
+                "h": 1080,
+                "player_version": self.PLAYER_VERSION,
+                "domain": urlparse(self.url).netloc,
+                "device_type": "mobile",
+                "browser": "chrome",
+                "browser_version": CHROME_VERSION,
+                "os": "ios",
+                "gmt": localnow().strftime("%z"),
+            },
+            schema=validate.Schema(
+                validate.parse_json(),
+                {
+                    "video": {
+                        "format": validate.any("dash", "hls"),
+                        "token": {
+                            "akamai": validate.url(),
+                        },
+                        "url": validate.url(),
+                    },
+                    "meta": {
+                        "title": str,
+                    },
+                },
+                validate.union_get(
+                    ("video", "format"),
+                    ("video", "token", "akamai"),
+                    ("video", "url"),
+                    ("meta", "title"),
+                ),
+            ),
+        )
+
+        video_url = self.session.http.get(
+            token_url,
+            params={
+                "url": url,
+            },
+            schema=validate.Schema(
+                validate.parse_json(),
+                {"url": validate.url()},
+                validate.get("url"),
+            ),
+        )
 
         if video_format == "dash":
             yield from DASHStream.parse_manifest(self.session, video_url).items()

@@ -5,20 +5,20 @@ $type live, vod
 $region North Macedonia
 """
 
-import logging
 import re
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://play\.mrt\.com\.mk/(live|play)/",
-))
+@pluginmatcher(
+    re.compile(r"https?://play\.mrt\.com\.mk/(live|play)/"),
+)
 class MRTmk(Plugin):
     file_re = re.compile(r"""(?P<url>https?://vod-[\d\w]+\.interspace\.com[^"',]+\.m3u8[^"',]*)""")
 
@@ -36,7 +36,7 @@ class MRTmk(Plugin):
     def _get_streams(self):
         res = self.session.http.get(self.url)
         stream_urls = self.stream_schema.validate(res.text)
-        log.debug("Found streams: {0}".format(len(stream_urls)))
+        log.debug(f"Found streams: {len(stream_urls)}")
         if not stream_urls:
             return
 

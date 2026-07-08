@@ -109,11 +109,19 @@ a[href^="https://"]:not(.no-external-link-icon):not(.muted-link):not(.sd-badge):
   Sidebar/Menubar and related
 */
 
+.sidebar-scroll, .toc-scroll {
+  overflow: hidden auto;
+}
+
 .toc-scroll:not(:hover) {
   scrollbar-color: transparent !important;
 }
 .toc-scroll:not(:hover)::-webkit-scrollbar-thumb {
   background-color: transparent !important;
+}
+
+a.sidebar-brand:visited {
+  color: unset;
 }
 
 .sidebar-brand,
@@ -284,17 +292,30 @@ table.table-custom-layout.table-custom-layout-dependencies tbody td {
   font-family: var(--font-stack--monospace);
 }
 
+details.sd-dropdown .sd-summary-content {
+  cursor: auto;
+}
+
 /*
   Content
 */
 
-.installation-grid .fab {
-  font-size: 5em;
+.acknowledgements img {
+  max-width: 8rem;
 }
 
-.grid-with-icons .fas {
+.installation-grid .fab {
+  font-size: clamp(1rem, 10vw, 5rem);
+}
+
+.grid-with-icons .sd-card-header .fas {
+  width: 1em;
+  margin-left: -1.25em;
+  margin-right: .25em;
+}
+
+.grid-with-icons .sd-card-body .fas {
   padding-right: 0.1em;
-  font-size: 1.75em;
   vertical-align: middle;
 }
 

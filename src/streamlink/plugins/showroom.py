@@ -5,21 +5,21 @@ $type live
 $metadata title
 """
 
-import logging
 import re
 from urllib.parse import parse_qsl, urlparse
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://(?:\w+\.)?showroom-live\.com/",
-))
+@pluginmatcher(
+    re.compile(r"https?://(?:\w+\.)?showroom-live\.com/"),
+)
 class Showroom(Plugin):
     LIVE_STATUS = 2
 
@@ -73,10 +73,14 @@ class Showroom(Plugin):
             },
             schema=validate.Schema(
                 validate.parse_json(),
-                {"streaming_url_list": [{
-                    "type": str,
-                    "url": validate.url(),
-                }]},
+                {
+                    "streaming_url_list": [
+                        {
+                            "type": str,
+                            "url": validate.url(),
+                        },
+                    ],
+                },
                 validate.get("streaming_url_list"),
                 validate.filter(lambda p: p["type"] == "hls_all"),
                 validate.get((0, "url")),
@@ -84,7 +88,7 @@ class Showroom(Plugin):
         )
 
         res = self.session.http.get(url, acceptable_status=(200, 403, 404))
-        if res.headers["Content-Type"] != "application/x-mpegURL":
+        if res.headers["Content-Type"] not in ("application/x-mpegURL", "application/vnd.apple.mpegurl"):
             log.error("This stream is restricted")
             return
 

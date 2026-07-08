@@ -6,19 +6,19 @@ $metadata title
 $region United Kingdom
 """
 
-import logging
 import re
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, PluginError, pluginmatcher
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://player\.stv\.tv/live",
-))
+@pluginmatcher(
+    re.compile(r"https?://player\.stv\.tv/live"),
+)
 class STV(Plugin):
     API_URL = "https://player.api.stv.tv/v1/streams/stv/"
 

@@ -3,50 +3,53 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from signal import SIGTERM
-from typing import List, Optional
 
 import pytest
 import trio
 
-from streamlink.compat import is_win32
+from streamlink.compat import BaseExceptionGroup, is_win32
 from streamlink.webbrowser.exceptions import WebbrowserError
 from streamlink.webbrowser.webbrowser import Webbrowser
 
 
 class _FakeWebbrowser(Webbrowser):
     @classmethod
-    def launch_args(cls) -> List[str]:
+    def launch_args(cls) -> list[str]:
         return ["foo", "bar"]
 
 
 class TestInit:
-    @pytest.mark.parametrize(("executable", "resolve_executable", "raises"), [
-        pytest.param(
-            None,
-            None,
-            pytest.raises(WebbrowserError, match="^Could not find web browser executable: Please set the path "),
-            id="Failure with unset path",
-        ),
-        pytest.param(
-            "custom",
-            None,
-            pytest.raises(WebbrowserError, match="^Invalid web browser executable: custom$"),
-            id="Failure with custom path",
-        ),
-        pytest.param(
-            None,
-            "default",
-            nullcontext(),
-            id="Success with default path",
-        ),
-        pytest.param(
-            "custom",
-            "custom",
-            nullcontext(),
-            id="Success with custom path",
-        ),
-    ], indirect=["resolve_executable"])
-    def test_resolve_executable(self, resolve_executable, executable: Optional[str], raises: nullcontext):
+    @pytest.mark.parametrize(
+        ("executable", "resolve_executable", "raises"),
+        [
+            pytest.param(
+                None,
+                None,
+                pytest.raises(WebbrowserError, match=r"^Could not find web browser executable: Please set the path "),
+                id="Failure with unset path",
+            ),
+            pytest.param(
+                "custom",
+                None,
+                pytest.raises(WebbrowserError, match=r"^Invalid web browser executable: custom$"),
+                id="Failure with custom path",
+            ),
+            pytest.param(
+                None,
+                "default",
+                nullcontext(),
+                id="Success with default path",
+            ),
+            pytest.param(
+                "custom",
+                "custom",
+                nullcontext(),
+                id="Success with custom path",
+            ),
+        ],
+        indirect=["resolve_executable"],
+    )
+    def test_resolve_executable(self, resolve_executable, executable: str | None, raises: nullcontext):
         with raises:
             Webbrowser(executable=executable)
 
@@ -88,7 +91,7 @@ class TestLaunch:
         async with webbrowser_launch(timeout=10) as (_nursery, process):
             assert process.poll() is None, "process is still running"
             mock_clock.jump(20)
-            await trio.sleep(0)
+            await trio.lowlevel.checkpoint()
 
         assert process.poll() == (1 if is_win32 else -SIGTERM), "Process has been terminated"
         assert [(record.name, record.levelname, record.msg) for record in caplog.records] == [
@@ -97,16 +100,31 @@ class TestLaunch:
         ]
 
     @pytest.mark.trio()
-    async def test_terminate_on_nursery_baseexception(self, caplog: pytest.LogCaptureFixture, webbrowser_launch):
-        class FakeBaseException(BaseException):
-            pass
-
+    @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit])
+    async def test_propagate_keyboardinterrupt_systemexit(self, caplog: pytest.LogCaptureFixture, webbrowser_launch, exception):
         process: trio.Process
-        with pytest.raises(FakeBaseException):  # noqa: PT012
+        with pytest.raises(exception) as excinfo:  # noqa: PT012
             async with webbrowser_launch() as (_nursery, process):
                 assert process.poll() is None, "process is still running"
-                raise FakeBaseException()
+                async with trio.open_nursery():
+                    raise exception()
 
+        assert isinstance(excinfo.value.__context__, BaseExceptionGroup)
+        assert process.poll() == (1 if is_win32 else -SIGTERM), "Process has been terminated"
+        assert [(record.name, record.levelname, record.msg) for record in caplog.records] == [
+            ("streamlink.webbrowser.webbrowser", "debug", "Waiting for web browser process to terminate"),
+        ]
+
+    @pytest.mark.trio()
+    async def test_terminate_on_exception(self, caplog: pytest.LogCaptureFixture, webbrowser_launch):
+        process: trio.Process
+        with pytest.raises(BaseExceptionGroup) as excinfo:  # noqa: PT012
+            async with webbrowser_launch() as (_nursery, process):
+                assert process.poll() is None, "process is still running"
+                async with trio.open_nursery():
+                    raise ZeroDivisionError()
+
+        assert excinfo.group_contains(ZeroDivisionError)
         assert process.poll() == (1 if is_win32 else -SIGTERM), "Process has been terminated"
         assert [(record.name, record.levelname, record.msg) for record in caplog.records] == [
             ("streamlink.webbrowser.webbrowser", "debug", "Waiting for web browser process to terminate"),

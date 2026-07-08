@@ -1,71 +1,122 @@
-import asyncio
-from contextlib import suppress
-from typing import Callable, List, Optional
+from __future__ import annotations
+
+import codecs
+import math
+from contextlib import aclosing, suppress
+from functools import partial
+from subprocess import PIPE
+from typing import TYPE_CHECKING, BinaryIO, TypedDict
+
+import trio
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
+
+    from typing_extensions import Unpack
+
+    class TRunArgs(TypedDict, total=False):
+        stdin: int | bytes | BinaryIO | None
 
 
 class ProcessOutput:
-    def __init__(self, command: List[str], timeout: Optional[float] = None):
+    _send_channel: trio.MemorySendChannel[bool]
+    _receive_channel: trio.MemoryReceiveChannel[bool]
+
+    def __init__(
+        self,
+        command: list[str],
+        timeout: float = math.inf,
+        wait_terminate: float = 2.0,
+        stdin: int | bytes | BinaryIO = b"",
+    ):
         self.command = command
         self.timeout = timeout
+        self.wait_terminate = wait_terminate
+        self.stdin = stdin
+        self._send_channel, self._receive_channel = trio.open_memory_channel(1)
+        self._receive_max_bytes: int | None = None
 
-    def run(self) -> bool:  # pragma: no cover
-        return asyncio.run(self._run())
+    def run(self, **kwargs: Unpack[TRunArgs]) -> bool:  # pragma: no cover
+        return trio.run(partial(self.arun, **kwargs))
 
-    async def _run(self) -> bool:
-        loop = asyncio.get_event_loop()
-        done: asyncio.Future[bool] = loop.create_future()
-        process = await asyncio.create_subprocess_exec(
-            *self.command,
-            stdin=None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        if not process.stdout or not process.stderr:  # pragma: no cover
-            return False
+    async def arun(self, **kwargs: Unpack[TRunArgs]) -> bool:
+        stdin = kwargs.get("stdin")
+        with trio.move_on_after(self.timeout):
+            async with trio.open_nursery() as nursery:
+                run_process = partial(
+                    trio.run_process,
+                    self.command,
+                    check=False,
+                    capture_stdout=False,
+                    capture_stderr=False,
+                    stdin=self.stdin if stdin is None else stdin,
+                    stdout=PIPE,
+                    stderr=PIPE,
+                    deliver_cancel=self._deliver_cancel,
+                )
+                process: trio.Process = await nursery.start(run_process)
 
-        async def ontimeout():
-            if self.timeout:
-                await asyncio.sleep(self.timeout)
-                done.set_result(False)
+                nursery.start_soon(self._onexit, process)
+                if process.stdout:  # pragma: no branch
+                    nursery.start_soon(self._onoutput, self.onstdout, process.stdout)
+                if process.stderr:  # pragma: no branch
+                    nursery.start_soon(self._onoutput, self.onstderr, process.stderr)
 
-        async def onexit():
-            code = await process.wait()
-            done.set_result(self.onexit(code))
+                res = await self._receive_channel.receive()
+                nursery.cancel_scope.cancel()
+                return res
 
-        async def onoutput(callback: Callable[[int, str], Optional[bool]], streamreader: asyncio.StreamReader):
-            line: bytes
-            idx = 0
-            async for line in streamreader:
+        # noinspection PyUnreachableCode
+        return False
+
+    async def _deliver_cancel(self, proc: trio.Process):
+        with suppress(OSError):
+            proc.terminate()
+            await trio.sleep(self.wait_terminate)
+            proc.kill()
+
+    async def _onexit(self, proc: trio.Process):
+        code = await proc.wait()
+        result = self.onexit(code)
+        await self._send_channel.send(result)
+
+    async def _onoutput(self, callback: Callable[[int, str], bool | None], stream: trio.abc.ReceiveStream):
+        idx = 0
+        async with aclosing(self._line_decode(stream)) as iter_line_decode:
+            async for line in iter_line_decode:
                 try:
-                    result = callback(idx, line.decode().rstrip())
-                except Exception as err:
-                    done.set_exception(err)
-                    break
+                    content = line.strip()
+                    result = callback(idx, content)
+                except Exception:
+                    raise
                 if result is not None:
-                    done.set_result(bool(result))
+                    await self._send_channel.send(bool(result))
                     break
                 idx += 1
 
-        tasks = (
-            loop.create_task(ontimeout()),
-            loop.create_task(onoutput(self.onstdout, process.stdout)),
-            loop.create_task(onoutput(self.onstderr, process.stderr)),
-            loop.create_task(onexit()),
-        )
-
-        try:
-            return await done
-        finally:
-            for task in tasks:
-                task.cancel()
-            with suppress(OSError):
-                process.kill()
+    async def _line_decode(self, stream: trio.abc.ReceiveStream) -> AsyncGenerator[str, None]:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        buffer: str = ""
+        while chunk := await stream.receive_some(max_bytes=self._receive_max_bytes):
+            buffer += decoder.decode(chunk, final=False)
+            while buffer:
+                line, nl, buffer = buffer.partition("\n")
+                if nl:
+                    yield line
+                else:
+                    buffer = line
+                    break
+        if tail := decoder.decode(b"", final=True):
+            buffer += tail
+        if buffer:
+            yield buffer
 
     def onexit(self, code: int) -> bool:
         return code == 0
 
-    def onstdout(self, idx: int, line: str) -> Optional[bool]:  # pragma: no cover
+    def onstdout(self, idx: int, line: str) -> bool | None:
         pass
 
-    def onstderr(self, idx: int, line: str) -> Optional[bool]:  # pragma: no cover
+    def onstderr(self, idx: int, line: str) -> bool | None:
         pass

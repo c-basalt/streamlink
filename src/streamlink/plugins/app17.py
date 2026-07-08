@@ -4,21 +4,21 @@ $url 17app.co
 $type live
 """
 
-import logging
 import re
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 from streamlink.stream.http import HTTPStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://17\.live/.+/live/(?P<channel>[^/&?]+)",
-))
+@pluginmatcher(
+    re.compile(r"https?://17\.live/.+/live/(?P<channel>[^/&?]+)"),
+)
 class App17(Plugin):
     def _get_streams(self):
         channel = self.match.group("channel")
@@ -29,15 +29,20 @@ class App17(Plugin):
             schema=validate.Schema(
                 validate.parse_json(),
                 validate.any(
-                    {"rtmpUrls": [{
-                        validate.optional("provider"): validate.any(int, None),
-                        "url": validate.url(path=validate.endswith(".flv")),
-                    }]},
+                    {
+                        "rtmpUrls": [
+                            {
+                                validate.optional("provider"): validate.any(int, None),
+                                "url": validate.url(path=validate.endswith(".flv")),
+                            },
+                        ],
+                    },
                     {"errorCode": int, "errorMessage": str},
                 ),
             ),
-            acceptable_status=(200, 403, 404, 420))
-        log.trace(f"{data!r}")
+            acceptable_status=(200, 403, 404, 420),
+        )
+        log.trace("%r", data)
         if data.get("errorCode"):
             log.error(f"{data['errorCode']} - {data['errorMessage'].replace('Something wrong: ', '')}")
             return

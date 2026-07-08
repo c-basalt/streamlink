@@ -51,7 +51,7 @@ class StreamIOThreadWrapper(io.IOBase):
 
     class Filler(Thread):
         def __init__(self, fd, buffer):
-            Thread.__init__(self)
+            super().__init__()
 
             self.error = None
             self.fd = fd
@@ -98,8 +98,7 @@ class StreamIOThreadWrapper(io.IOBase):
         if self.filler.error and self.buffer.length == 0:
             raise self.filler.error
 
-        return self.buffer.read(size, block=self.filler.is_alive(),
-                                timeout=self.timeout)
+        return self.buffer.read(size, block=self.filler.is_alive(), timeout=self.timeout)
 
     def close(self):
         self.filler.stop()

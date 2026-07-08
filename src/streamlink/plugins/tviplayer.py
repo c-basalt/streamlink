@@ -4,21 +4,21 @@ $url tviplayer.iol.pt
 $type live, vod
 """
 
-import logging
 import re
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 from streamlink.utils.url import update_qsd
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https://tviplayer\.iol\.pt/(?:direto|programa)/",
-))
+@pluginmatcher(
+    re.compile(r"https://tviplayer\.iol\.pt/(?:direto|programa)/"),
+)
 class TVIPlayer(Plugin):
     def _get_streams(self):
         self.session.http.headers.update({"Referer": "https://tviplayer.iol.pt/"})
@@ -45,7 +45,7 @@ class TVIPlayer(Plugin):
         )
         if not data:
             return
-        log.debug(f"{data!r}")
+        log.debug("%r", data)
 
         if data["liveType"].upper() == "DIRETO" and data["videoType"].upper() == "LIVE":
             geo_path = "live"
@@ -63,7 +63,7 @@ class TVIPlayer(Plugin):
                 },
             ),
         )
-        log.debug(f"{data_geo!r}")
+        log.debug("%r", data_geo)
         if data_geo["detail"] != "ok":
             log.error(f"{data_geo['detail']}")
             return

@@ -1,31 +1,37 @@
-import asyncio
+from __future__ import annotations
+
 import errno
-import sys
 from collections import deque
 from pathlib import Path
 from threading import Thread
-from typing import Callable, Deque, List, Union
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 import pytest
 
 from streamlink.stream.stream import StreamIO
+from streamlink_cli.console.progress import Progress
 from streamlink_cli.output import FileOutput, HTTPOutput, PlayerOutput
 from streamlink_cli.streamrunner import PlayerPollThread, StreamRunner, log as streamrunnerlogger
-from streamlink_cli.utils.progress import Progress
 from tests.testutils.handshake import Handshake
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 TIMEOUT_AWAIT_HANDSHAKE = 1
 TIMEOUT_AWAIT_THREADJOIN = 1
 
 
-class EventedPlayerPollThread(PlayerPollThread):
-    POLLING_INTERVAL = 0
-
+class _TestableWithHandshake:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.handshake = Handshake()
+
+
+class EventedPlayerPollThread(_TestableWithHandshake, PlayerPollThread):
+    POLLING_INTERVAL = 0
 
     def poll(self):
         with self.handshake():
@@ -37,13 +43,12 @@ class EventedPlayerPollThread(PlayerPollThread):
         self.handshake.go()
 
 
-class FakeStream(StreamIO):
+class FakeStream(_TestableWithHandshake, StreamIO):
     """Fake stream implementation, for feeding sample data to the stream runner and simulating read pauses and read errors"""
 
     def __init__(self) -> None:
         super().__init__()
-        self.handshake = Handshake()
-        self.data: Deque[Union[bytes, Callable]] = deque()
+        self.data: deque[bytes | Callable[[], bytes]] = deque()
 
     # noinspection PyUnusedLocal
     def read(self, *args):
@@ -51,16 +56,18 @@ class FakeStream(StreamIO):
             if not self.data:
                 return b""
             data = self.data.popleft()
-            return data() if callable(data) else data
+            if callable(data) and not isinstance(data, bytes):
+                return data()
+            else:
+                return data
 
 
-class FakeOutput:
+class FakeOutput(_TestableWithHandshake):
     """Common output/http-server/progress interface, for caching all write() calls and simulating write errors"""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.handshake = Handshake()
-        self.data: List[bytes] = []
+        self.data: list[bytes] = []
 
     def write(self, data):
         with self.handshake():
@@ -135,16 +142,9 @@ def runnerthread(request: pytest.FixtureRequest, stream_runner: StreamRunner):
     assert str(thread.exception) == str(exception)
 
 
-async def assert_handshake_steps(*items):
-    """
-    Run handshake steps concurrently, to not be dependent too much on implementation details and the order of handshakes.
-    For example, concurrently await one read(), one write() and one progress() call.
-    """
-    steps = asyncio.gather(
-        *(item.handshake.asyncstep(TIMEOUT_AWAIT_HANDSHAKE) for item in items),
-        return_exceptions=True,
-    )
-    assert await steps == [True for _ in items]
+async def assert_handshake_steps(*items: _TestableWithHandshake) -> None:
+    for item in items:
+        assert await item.handshake.asyncstep(TIMEOUT_AWAIT_HANDSHAKE) is True
 
 
 def assert_thread_termination(thread: Thread, assertion: str):
@@ -161,27 +161,30 @@ class TestPlayerOutput:
         return player_process
 
     @pytest.fixture()
-    def output(self, player_process: Mock):
-        with patch("subprocess.Popen") as mock_popen, \
-             patch("streamlink_cli.output.player.sleep"):
-            mock_popen.return_value = player_process
-            output = FakePlayerOutput(Path("mocked"))
-            output.open()
+    def output(self, monkeypatch: pytest.MonkeyPatch, player_process: Mock):
+        mock_popen = Mock(return_value=player_process)
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        monkeypatch.setattr("streamlink_cli.output.player.sleep", Mock())
+
+        output = FakePlayerOutput(Path("mocked"))
+        output.open()
+        try:
             yield output
+        finally:
             output.close()
 
     @pytest.fixture()
-    def stream_runner(self, stream: FakeStream, output: FakePlayerOutput):
-        with patch("streamlink_cli.streamrunner.PlayerPollThread", EventedPlayerPollThread):
-            stream_runner = StreamRunner(stream, output)
-            assert isinstance(stream_runner.playerpoller, EventedPlayerPollThread)
-            assert not stream_runner.playerpoller.is_alive()
-            assert not stream_runner.is_http
-            assert not stream_runner.progress
-            yield stream_runner
-            assert not stream_runner.playerpoller.is_alive()
+    def stream_runner(self, monkeypatch: pytest.MonkeyPatch, stream: FakeStream, output: FakePlayerOutput):
+        monkeypatch.setattr("streamlink_cli.streamrunner.PlayerPollThread", EventedPlayerPollThread)
+        stream_runner = StreamRunner(stream, output)
+        assert isinstance(stream_runner.playerpoller, EventedPlayerPollThread)
+        assert not stream_runner.playerpoller.is_alive()
+        assert not isinstance(stream_runner.output, HTTPOutput)
+        assert not stream_runner.progress
+        yield stream_runner
+        assert not stream_runner.playerpoller.is_alive()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.trio()
     async def test_read_write(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -219,11 +222,11 @@ class TestPlayerOutput:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
-            ("streamrunner", "info", "Stream ended"),
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
         ]
 
-    @pytest.mark.asyncio()
+    @pytest.mark.trio()
     async def test_paused(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -273,11 +276,11 @@ class TestPlayerOutput:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
-            ("streamrunner", "info", "Stream ended"),
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
         ]
 
-    @pytest.mark.asyncio()
+    @pytest.mark.trio()
     @pytest.mark.parametrize(
         ("writeerror", "runnerthread"),
         [
@@ -348,12 +351,12 @@ class TestPlayerOutput:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
-            ("streamrunner", "info", "Player closed"),
-            ("streamrunner", "info", "Stream ended"),
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            ("streamrunner", "EventedPlayerPollThread", "info", "Player closed"),
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
         ]
 
-    @pytest.mark.asyncio()
+    @pytest.mark.trio()
     async def test_player_close_paused(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -403,12 +406,12 @@ class TestPlayerOutput:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
-            ("streamrunner", "info", "Player closed"),
-            ("streamrunner", "info", "Stream ended"),
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            ("streamrunner", "EventedPlayerPollThread", "info", "Player closed"),
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
         ]
 
-    @pytest.mark.asyncio()
+    @pytest.mark.trio()
     @pytest.mark.parametrize(
         "runnerthread",
         [{"exception": OSError("Error when reading from stream: Read timeout, exiting")}],
@@ -445,8 +448,8 @@ class TestPlayerOutput:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
-            ("streamrunner", "info", "Stream ended"),
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
         ]
 
 
@@ -460,10 +463,10 @@ class TestHTTPServer:
         stream_runner = StreamRunner(stream, output)
         assert not stream_runner.playerpoller
         assert not stream_runner.progress
-        assert stream_runner.is_http
+        assert isinstance(stream_runner.output, HTTPOutput)
         return stream_runner
 
-    @pytest.mark.asyncio()
+    @pytest.mark.trio()
     async def test_read_write(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -497,8 +500,8 @@ class TestHTTPServer:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
-            ("streamrunner", "info", "Stream ended"),
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
         ]
 
     @pytest.mark.parametrize(
@@ -549,73 +552,10 @@ class TestHTTPServer:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        expectedlogs = (
-            ([("streamrunner", "info", "HTTP connection closed")] if logs else [])
-            + [("streamrunner", "info", "Stream ended")]
-        )
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == expectedlogs
-
-
-class TestHasProgress:
-    @pytest.mark.parametrize(
-        "output",
-        [
-            pytest.param(
-                FakePlayerOutput(Path("mocked")),
-                id="Player output without record",
-            ),
-            pytest.param(
-                FakeFileOutput(fd=Mock()),
-                id="FileOutput with file descriptor",
-            ),
-            pytest.param(
-                FakeHTTPOutput(),
-                id="HTTPServer",
-            ),
-        ],
-    )
-    def test_no_progress(
-        self,
-        output: Union[FakePlayerOutput, FakeFileOutput, FakeHTTPOutput],
-    ):
-        stream_runner = FakeStreamRunner(StreamIO(), output, show_progress=True)
-        assert not stream_runner.progress
-
-    @pytest.mark.parametrize(
-        ("output", "expected"),
-        [
-            pytest.param(
-                FakePlayerOutput(Path("mocked"), record=FakeFileOutput(Path("record"))),
-                Path("record"),
-                id="PlayerOutput with record",
-            ),
-            pytest.param(
-                FakeFileOutput(filename=Path("filename")),
-                Path("filename"),
-                id="FileOutput with file name",
-            ),
-            pytest.param(
-                FakeFileOutput(record=FakeFileOutput(filename=Path("record"))),
-                Path("record"),
-                id="FileOutput with record",
-            ),
-            pytest.param(
-                FakeFileOutput(filename=Path("filename"), record=FakeFileOutput(filename=Path("record"))),
-                Path("filename"),
-                id="FileOutput with file name and record",
-            ),
-        ],
-    )
-    def test_has_progress(
-        self,
-        output: Union[FakePlayerOutput, FakeFileOutput],
-        expected: Path,
-    ):
-        stream_runner = FakeStreamRunner(StreamIO(), output, show_progress=True)
-        assert stream_runner.progress
-        assert not stream_runner.progress.is_alive()
-        assert stream_runner.progress.stream is sys.stderr
-        assert stream_runner.progress.path == expected
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            *([("streamrunner", "Runner thread", "info", "HTTP connection closed")] if logs else []),
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
+        ]
 
 
 class TestProgress:
@@ -624,18 +564,19 @@ class TestProgress:
         return FakeFileOutput(Path("filename"))
 
     @pytest.fixture()
-    def stream_runner(self, stream: FakeStream, output: FakeFileOutput):
-        with patch("streamlink_cli.streamrunner.Progress", FakeProgress):
-            stream_runner = FakeStreamRunner(stream, output, show_progress=True)
-            assert not stream_runner.playerpoller
-            assert not stream_runner.is_http
-            assert isinstance(stream_runner.progress, FakeProgress)
-            assert stream_runner.progress.path == Path("filename")
-            assert not stream_runner.progress.is_alive()
-            yield stream_runner
-            assert not stream_runner.progress.is_alive()
+    def progress(self):
+        return FakeProgress(console=Mock(), path=Path("filename"))
 
-    @pytest.mark.asyncio()
+    @pytest.fixture()
+    def stream_runner(self, stream: FakeStream, output: FakeFileOutput, progress: FakeProgress):
+        stream_runner = FakeStreamRunner(stream, output, progress=progress)
+        assert not stream_runner.playerpoller
+        assert stream_runner.progress is progress
+        assert not stream_runner.progress.is_alive()
+        yield stream_runner
+        assert not stream_runner.progress.is_alive()
+
+    @pytest.mark.trio()
     async def test_read_write(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -673,6 +614,6 @@ class TestProgress:
 
         # wait for runner thread to terminate first before asserting log records
         assert_thread_termination(runnerthread, "Runner thread has terminated")
-        assert [(record.module, record.levelname, record.message) for record in caplog.records] == [
-            ("streamrunner", "info", "Stream ended"),
+        assert [(record.module, record.threadName, record.levelname, record.message) for record in caplog.records] == [
+            ("streamrunner", "Runner thread", "info", "Stream ended"),
         ]

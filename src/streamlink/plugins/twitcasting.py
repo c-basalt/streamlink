@@ -5,22 +5,42 @@ $type live
 $metadata id
 """
 
+from __future__ import annotations
+
 import hashlib
-import logging
 import re
 import sys
-from time import time
 
 from streamlink.buffers import RingBuffer
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.plugin.api.websocket import WebsocketClient
-from streamlink.stream.hls import HLSStream
+from streamlink.stream.hls import HLSStream, HLSStreamReader, HLSStreamWriter
 from streamlink.stream.stream import Stream, StreamIO
 from streamlink.utils.url import update_qsd
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
+
+
+class TwitCastingHLSStreamWriter(HLSStreamWriter):
+    _re_preroll_map_segment = re.compile(r"-\d+\.\w+$", re.IGNORECASE)
+
+    def should_filter_segment(self, segment):
+        return (
+            "preroll-" in segment.uri
+            or (segment.map and self._re_preroll_map_segment.search(segment.map.uri))
+            or super().should_filter_segment(segment)
+        )
+
+
+class TwitCastingHLSStreamReader(HLSStreamReader):
+    __writer__ = TwitCastingHLSStreamWriter
+
+
+class TwitCastingHLSStream(HLSStream):
+    __reader__ = TwitCastingHLSStreamReader
 
 
 def match_or_none(pattern, text):
@@ -29,9 +49,9 @@ def match_or_none(pattern, text):
         return m[1].strip()
 
 
-@pluginmatcher(re.compile(
-    r"https?://twitcasting\.tv/(?P<channel>[^/]+)",
-))
+@pluginmatcher(
+    re.compile(r"https?://twitcasting\.tv/(?P<channel>[^/]+)"),
+)
 @pluginargument(
     "password",
     sensitive=True,
@@ -40,26 +60,19 @@ def match_or_none(pattern, text):
 )
 class TwitCasting(Plugin):
     _URL_API_STREAMSERVER = "https://twitcasting.tv/streamserver.php"
-    _URL_STREAM_HLS = "https://{host}/{channel}/metastream.m3u8"
-    _URL_STREAM_WEBSOCKET = "wss://{host}/ws.app/stream/{id}/fmp4/bd/1/1500?mode={mode}"
-
-    _STREAM_HOST_DEFAULT = "twitcasting.tv"
-
-    _WEBSOCKET_MODES = {
-        "main": "source",
-        "mobilesource": "mobilesource",
-        "base": None,
-    }
 
     # prefer websocket streams over HLS streams due to latency reasons
     _WEIGHTS = {
-        "main": sys.maxsize,
-        "mobilesource": sys.maxsize - 1,
-        "base": sys.maxsize - 2,
+        "ws_main": sys.maxsize,
+        "ws_mobilesource": sys.maxsize - 1,
+        "ws_base": sys.maxsize - 2,
+        "hls_high": sys.maxsize - 10,
+        "hls_medium": sys.maxsize - 11,
+        "hls_low": sys.maxsize - 12,
     }
 
     @classmethod
-    def stream_weight(cls, stream):
+    def stream_weight(cls, stream: str) -> tuple[float, str]:
         return (cls._WEIGHTS[stream], "none") if stream in cls._WEIGHTS else super().stream_weight(stream)
 
     def _api_query_streamserver(self):
@@ -68,6 +81,7 @@ class TwitCasting(Plugin):
             params={
                 "target": self.match["channel"],
                 "mode": "client",
+                "player": "pc_web",
             },
             schema=validate.Schema(
                 validate.parse_json(),
@@ -76,50 +90,28 @@ class TwitCasting(Plugin):
                         "id": int,
                         "live": bool,
                     },
-                    # ignore llfmp4 websocket streams, as those seem to cause video/audio desync
-                    validate.optional("fmp4"): {
-                        "proto": str,
-                        "host": str,
-                        "source": bool,
-                        "mobilesource": bool,
+                    validate.optional("llfmp4"): {
+                        "streams": {
+                            str: validate.url(),
+                        },
                     },
-                    # ignore the "dvr" HLS URL, as it results in a 403 response
-                    validate.optional("hls"): {
-                        "host": str,
-                        "proto": str,
-                        "source": bool,
+                    validate.optional("tc-hls"): {
+                        "streams": {
+                            str: validate.url(),
+                        },
                     },
                 },
-                validate.union_get("movie", "fmp4", "hls"),
+                validate.union_get("movie", "llfmp4", "tc-hls"),
             ),
         )
 
-    def _get_streams_hls(self, data):
-        host = data.get("host") or self._STREAM_HOST_DEFAULT
-        url = self._URL_STREAM_HLS.format(host=host, channel=self.match["channel"])
-        params = {"__n": int(time() * 1000)}
+    def _get_streams_hls(self, streams, params=None):
+        for name, url in streams.items():
+            yield f"hls_{name}", TwitCastingHLSStream(self.session, url, params=params)
 
-        streams = [params]
-        if data.get("source"):
-            streams.append({"mode": "source", **params})
-
-        for params in streams:
-            yield from HLSStream.parse_variant_playlist(self.session, url, params=params).items()
-
-    def _get_streams_websocket(self, data):
-        host = data.get("host") or self._STREAM_HOST_DEFAULT
-        password = self.options.get("password")
-
-        for mode, prop in self._WEBSOCKET_MODES.items():
-            if prop is not None and not data.get(prop):
-                continue
-
-            url = self._URL_STREAM_WEBSOCKET.format(host=host, id=self.id, mode=mode)
-            if password is not None:
-                password_hash = hashlib.md5(password.encode()).hexdigest()
-                url = update_qsd(url, {"word": password_hash})
-
-            yield mode, TwitCastingStream(self.session, url)
+    def _get_streams_websocket(self, streams, params=None):
+        for name, url in streams.items():
+            yield f"ws_{name}", TwitCastingStream(self.session, url, params=params)
 
     def _get_streams(self):
         movie, websocket, hls = self._api_query_streamserver()
@@ -133,14 +125,17 @@ class TwitCasting(Plugin):
         self.id = movie.get("id")
 
         webpage = self.session.http.get(f'https://twitcasting.tv/{self.match["channel"]}').text
-
         self.title = match_or_none(r'<meta\s+\bproperty="og:title"[^>]+\bcontent="([^"]+)"/>', webpage)
         self.author = match_or_none(r'<span class="tw-user-nav-name">([^<]+)', webpage)
 
+        params = {}
+        if password := self.options.get("password"):
+            params |= {"word": hashlib.md5(password.encode()).hexdigest()}
+
+        if websocket:
+            yield from self._get_streams_websocket(websocket["streams"], params)
         if hls:
-            yield from self._get_streams_hls(hls)
-        elif websocket:
-            yield from self._get_streams_websocket(websocket)
+            yield from self._get_streams_hls(hls["streams"], params)
 
 
 class TwitCastingWsClient(WebsocketClient):
@@ -164,7 +159,7 @@ class TwitCastingWsClient(WebsocketClient):
 
 
 class TwitCastingReader(StreamIO):
-    def __init__(self, stream: "TwitCastingStream", timeout=None):
+    def __init__(self, stream: TwitCastingStream, timeout=None):
         super().__init__()
         self.session = stream.session
         self.stream = stream
@@ -196,9 +191,11 @@ class TwitCastingReader(StreamIO):
 
 
 class TwitCastingStream(Stream):
-    def __init__(self, session, url):
+    __shortname__ = "websocket"
+
+    def __init__(self, session, url, params):
         super().__init__(session)
-        self.url = url
+        self.url = update_qsd(url, params or {})
 
     def to_url(self):
         return self.url

@@ -8,24 +8,27 @@ $metadata title
 $region Pakistan
 """
 
+from __future__ import annotations
+
 import binascii
-import logging
 import re
+from typing import Literal
 from urllib.parse import urljoin
 
-from streamlink.plugin import Plugin, pluginmatcher
+from streamlink.logger import getLogger
+from streamlink.plugin import Plugin, PluginError, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 from streamlink.utils.crypto import AES, unpad
 from streamlink.utils.parse import parse_json
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://(?:www\.)?mjunoon\.tv/(?:watch/)?([\w-]+)",
-))
+@pluginmatcher(
+    re.compile(r"https?://(?:www\.)?mjunoon\.tv/(?:watch/)?([\w-]+)"),
+)
 class Mjunoon(Plugin):
     login_url = "https://cdn2.mjunoon.tv:9191/v2/auth/login"
     stream_url = "https://cdn2.mjunoon.tv:9191/v2/streaming-url"
@@ -50,23 +53,29 @@ class Mjunoon(Plugin):
         "expires_in": int,
     })
 
-    encrypted_data_schema = validate.Schema({
-        "eData": str,
-    }, validate.get("eData"))
-
-    stream_schema = validate.Schema({
-        "data": {
-            "live_stream_url": validate.url(),
-            "channel_name": str,
-            "meta_title": validate.any(None, str),
-            "genres": validate.all(
-                validate.transform(lambda x: x.split(",")[0]),
-                str,
-            ),
+    encrypted_data_schema = validate.Schema(
+        {
+            "eData": str,
         },
-    }, validate.get("data"))
+        validate.get("eData"),
+    )
 
-    encryption_algorithm = {
+    stream_schema = validate.Schema(
+        {
+            "data": {
+                "live_stream_url": validate.url(),
+                "channel_name": str,
+                "meta_title": validate.any(None, str),
+                "genres": validate.all(
+                    validate.transform(lambda x: x.split(",")[0]),
+                    str,
+                ),
+            },
+        },
+        validate.get("data"),
+    )
+
+    encryption_algorithm: dict[str, Literal[2]] = {
         "aes-256-cbc": AES.MODE_CBC,
     }
 
@@ -106,12 +115,13 @@ class Mjunoon(Plugin):
 
         return js_data
 
-    def decrypt_data(self, cipher_data, encrypted_data):
-        cipher = AES.new(
-            bytes(cipher_data["key"], "utf-8"),
-            self.encryption_algorithm[cipher_data["algorithm"]],
-            bytes(cipher_data["iv"], "utf-8"),
-        )
+    def decrypt_data(self, cipher_data: dict[str, str], encrypted_data: str):
+        if not (algorithm := self.encryption_algorithm.get(cipher_data["algorithm"])):
+            raise PluginError(f"Invalid encryption algorithm: {cipher_data['algorithm']}")
+
+        key = bytes(cipher_data["key"], "utf-8")
+        iv = bytes(cipher_data["iv"], "utf-8")
+        cipher = AES.new(key, algorithm, iv=iv)
 
         return unpad(cipher.decrypt(binascii.unhexlify(encrypted_data)), 16, "pkcs7")
 
@@ -131,12 +141,12 @@ class Mjunoon(Plugin):
                 json=js_data["credentials"],
             )
             token_data = self.session.http.json(res, schema=self.token_schema)
-            log.debug(f'Token={token_data["token"]}')
+            log.debug(f"Token={token_data['token']}")
 
             self.cache.set("token", token_data["token"], expires=token_data["expires_in"])
             self.cache.set("token_type", token_data["token_type"], expires=token_data["expires_in"])
 
-        headers = {"Authorization": f'{token_data["token_type"]} {token_data["token"]}'}
+        headers = {"Authorization": f"{token_data['token_type']} {token_data['token']}"}
         data = {
             "slug": slug,
             "type": js_data["type"],

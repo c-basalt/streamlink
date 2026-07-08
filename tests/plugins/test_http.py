@@ -1,11 +1,17 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, call
 
 import pytest
 
 from streamlink.plugins.http import HTTPStreamPlugin
-from streamlink.session import Streamlink
 from streamlink.stream.http import HTTPStream
 from tests.plugins import PluginCanHandleUrl
+
+
+if TYPE_CHECKING:
+    from streamlink.session import Streamlink
 
 
 class TestPluginCanHandleUrlHTTPStreamPlugin(PluginCanHandleUrl):
@@ -28,11 +34,14 @@ class TestPluginCanHandleUrlHTTPStreamPlugin(PluginCanHandleUrl):
     ]
 
 
-@pytest.mark.parametrize(("url", "expected"), [
-    ("httpstream://example.com/foo", "https://example.com/foo"),
-    ("httpstream://http://example.com/foo", "http://example.com/foo"),
-    ("httpstream://https://example.com/foo", "https://example.com/foo"),
-])
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("httpstream://example.com/foo", "https://example.com/foo"),
+        ("httpstream://http://example.com/foo", "http://example.com/foo"),
+        ("httpstream://https://example.com/foo", "https://example.com/foo"),
+    ],
+)
 def test_get_streams(
     monkeypatch: pytest.MonkeyPatch,
     session: Streamlink,
@@ -68,11 +77,13 @@ def test_parameters(monkeypatch: pytest.MonkeyPatch, session: Streamlink):
     )
     plugin.streams()
 
-    assert mock_httpstream_init.call_args_list == [call(
-        session,
-        "https://example.com/foo",
-        auth=("foo", "bar"),
-        verify=False,
-        referer="https://example2.com/bar",
-        params={"key": "a value"},
-    )]
+    assert mock_httpstream_init.call_args_list == [
+        call(
+            session,
+            "https://example.com/foo",
+            auth=("foo", "bar"),
+            verify=False,
+            referer="https://example2.com/bar",
+            params={"key": "a value"},
+        ),
+    ]

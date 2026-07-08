@@ -1,25 +1,23 @@
 """
 $description United Arab Emirates CDN hosting live content for various websites in The Middle East.
 $url alwasat.ly
-$url media.gov.kw
 $type live
 $region various
 """
 
 import base64
-import logging
 import re
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
 @pluginmatcher(name="alwasatly", pattern=re.compile(r"https?://(?:www\.)?alwasat\.ly"))
-@pluginmatcher(name="mediagovkw", pattern=re.compile(r"https?://(?:www\.)?media\.gov\.kw"))
 class HiPlayer(Plugin):
     DAI_URL = "https://pubads.g.doubleclick.net/ssai/event/{0}/streams"
 

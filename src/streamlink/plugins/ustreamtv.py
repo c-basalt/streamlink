@@ -5,19 +5,21 @@ $url video.ibm.com
 $type live, vod
 """
 
-import logging
+from __future__ import annotations
+
 import re
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from random import randint
 from threading import Event, RLock
-from typing import Any, Callable, Deque, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlunparse
 
 from requests import Response
 
 from streamlink.exceptions import PluginError, StreamError
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginargument, pluginmatcher
 from streamlink.plugin.api import useragents, validate
 from streamlink.plugin.api.websocket import WebsocketClient
@@ -27,7 +29,11 @@ from streamlink.stream.stream import Stream
 from streamlink.utils.parse import parse_json
 
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
+
+log = getLogger(__name__)
 
 
 @dataclass
@@ -56,7 +62,7 @@ class UStreamTVSegment(Segment):
     path: str
 
     # the segment URLs depend on the CDN and the chosen stream format and its segment template string
-    def url(self, base: Optional[str], template: str) -> str:
+    def url(self, base: str | None, template: str) -> str:
         return urljoin(
             base or "",
             f"{self.path}/{template.replace('%', str(self.num), 1).replace('%', self.hash, 1)}",
@@ -75,52 +81,56 @@ class UStreamTVWsClient(WebsocketClient):
         "args": [{str: object}],
     })
     _schema_stream_formats = validate.Schema({
-        "streams": [validate.any(
-            validate.all(
-                {
-                    "contentType": "video/mp4",
-                    "sourceStreamVersion": int,
-                    "initUrl": str,
-                    "segmentUrl": str,
-                    "bitrate": int,
-                    "height": int,
-                },
-                validate.transform(lambda obj: StreamFormatVideo(**obj)),
+        "streams": [
+            validate.any(
+                validate.all(
+                    {
+                        "contentType": "video/mp4",
+                        "sourceStreamVersion": int,
+                        "initUrl": str,
+                        "segmentUrl": str,
+                        "bitrate": int,
+                        "height": int,
+                    },
+                    validate.transform(lambda obj: StreamFormatVideo(**obj)),
+                ),
+                validate.all(
+                    {
+                        "contentType": "audio/mp4",
+                        "sourceStreamVersion": int,
+                        "initUrl": str,
+                        "segmentUrl": str,
+                        "bitrate": int,
+                        validate.optional("language"): str,
+                    },
+                    validate.transform(lambda obj: StreamFormatAudio(**obj)),
+                ),
+                object,
             ),
-            validate.all(
-                {
-                    "contentType": "audio/mp4",
-                    "sourceStreamVersion": int,
-                    "initUrl": str,
-                    "segmentUrl": str,
-                    "bitrate": int,
-                    validate.optional("language"): str,
-                },
-                validate.transform(lambda obj: StreamFormatAudio(**obj)),
-            ),
-            object,
-        )],
+        ],
     })
     _schema_stream_segments = validate.Schema({
         "chunkId": int,
         "chunkTime": int,
         "contentAccess": validate.all(
             {
-                "accessList": [{
-                    "data": {
-                        "path": str,
+                "accessList": [
+                    {
+                        "data": {
+                            "path": str,
+                        },
                     },
-                }],
+                ],
             },
             validate.get(("accessList", 0, "data", "path")),
         ),
         "hashes": {validate.transform(int): str},
     })
 
-    stream_cdn: Optional[str] = None
-    stream_formats_video: Optional[List[StreamFormatVideo]] = None
-    stream_formats_audio: Optional[List[StreamFormatAudio]] = None
-    stream_initial_id: Optional[int] = None
+    stream_cdn: str | None = None
+    stream_formats_video: list[StreamFormatVideo] | None = None
+    stream_formats_audio: list[StreamFormatAudio] | None = None
+    stream_initial_id: int | None = None
 
     def __init__(
         self,
@@ -137,8 +147,8 @@ class UStreamTVWsClient(WebsocketClient):
         self.ready = Event()
         self.stream_error = None
         # a list of deques subscribed by worker threads which independently need to read segments
-        self.stream_segments_subscribers: List[Deque[UStreamTVSegment]] = []
-        self.stream_segments_initial: Deque[UStreamTVSegment] = deque()
+        self.stream_segments_subscribers: list[deque[UStreamTVSegment]] = []
+        self.stream_segments_initial: deque[UStreamTVSegment] = deque()
         self.stream_segments_lock = RLock()
 
         self.media_id = media_id
@@ -152,7 +162,7 @@ class UStreamTVWsClient(WebsocketClient):
         super().__init__(session, self._get_url(), origin="https://www.ustream.tv")
 
     def _get_url(self):
-        return self.API_URL.format(randint(0, 0xffffff), self.media_id, self.application, self.cluster)
+        return self.API_URL.format(randint(0, 0xFFFFFF), self.media_id, self.application, self.cluster)
 
     def _set_error(self, error: Any):
         self.stream_error = error
@@ -168,7 +178,7 @@ class UStreamTVWsClient(WebsocketClient):
                 log.info("Closing websocket connection")
                 self.ws.close()
 
-    def segments_subscribe(self) -> Deque[UStreamTVSegment]:
+    def segments_subscribe(self) -> deque[UStreamTVSegment]:
         with self.stream_segments_lock:
             # copy the initial segments deque (segments arrive early)
             new_deque = self.stream_segments_initial.copy()
@@ -212,9 +222,9 @@ class UStreamTVWsClient(WebsocketClient):
             return
 
         cmd: str = parsed["cmd"]
-        args: List[Dict] = parsed["args"]
-        log.trace(f"Received '{cmd}' command")  # type: ignore[attr-defined]
-        log.trace(f"{args!r}")  # type: ignore[attr-defined]
+        args: list[dict] = parsed["args"]
+        log.trace("Received '%s' command", cmd)
+        log.trace("%r", args)
 
         handlers = self._MESSAGE_HANDLERS.get(cmd)
         if handlers is not None:
@@ -226,7 +236,7 @@ class UStreamTVWsClient(WebsocketClient):
                         handler(self, argdata)
 
     # noinspection PyMethodMayBeStatic
-    def _handle_warning(self, data: Dict):
+    def _handle_warning(self, data: dict):
         log.warning(f"{data['code']}: {str(data['message'])[:50]}")
 
     # noinspection PyUnusedLocal
@@ -237,26 +247,28 @@ class UStreamTVWsClient(WebsocketClient):
     def _handle_reject_geo_lock(self, *args):
         self._set_error("This content is not available in your area")
 
-    def _handle_reject_cluster(self, arg: Dict):
+    def _handle_reject_cluster(self, arg: dict):
         self.cluster = arg["name"]
         log.info(f"Switching cluster to: {self.cluster}")
         self.reconnect(url=self._get_url())
 
-    def _handle_reject_referrer_lock(self, arg: Dict):
+    def _handle_reject_referrer_lock(self, arg: dict):
         self.referrer = arg["redirectUrl"]
         log.info(f"Updating referrer to: {self.referrer}")
         self.reconnect(url=self._get_url())
 
-    def _handle_module_info_cdn_config(self, data: Dict):
+    def _handle_module_info_cdn_config(self, data: dict):
         self.stream_cdn = urlunparse((
             data["protocol"],
             data["data"][0]["data"][0]["sites"][0]["host"],
             data["data"][0]["data"][0]["sites"][0]["path"],
-            "", "", "",
+            "",
+            "",
+            "",
         ))
         self._set_ready()
 
-    def _handle_module_info_stream(self, data: Dict):
+    def _handle_module_info_stream(self, data: dict):
         if data.get("contentAvailable") is False:
             return self._set_error("This stream is currently offline")
 
@@ -276,7 +288,7 @@ class UStreamTVWsClient(WebsocketClient):
 
         # parse segment duration and hashes, and queue new segments
         try:
-            segmentdata: Dict = self._schema_stream_segments.validate(mp4_segmented)
+            segmentdata: dict = self._schema_stream_segments.validate(mp4_segmented)
         except PluginError:
             log.error("Failed parsing hashes")
             return
@@ -284,7 +296,7 @@ class UStreamTVWsClient(WebsocketClient):
         current_id: int = segmentdata["chunkId"]
         duration: int = segmentdata["chunkTime"]
         path: str = segmentdata["contentAccess"]
-        hashes: Dict[int, str] = segmentdata["hashes"]
+        hashes: dict[int, str] = segmentdata["hashes"]
 
         sorted_ids = sorted(hashes.keys())
         count = len(sorted_ids)
@@ -308,20 +320,22 @@ class UStreamTVWsClient(WebsocketClient):
                     # the last id->hash item will use the previous diff to extrapolate segment IDs
                     diff = sorted_ids[idx_next] - segment_id
                 for num in range(segment_id, segment_id + diff):
-                    self._segments_append(UStreamTVSegment(
-                        uri="",
-                        num=num,
-                        duration=duration,
-                        available_at=current_time + timedelta(seconds=(num - current_id - 1) * duration / 1000),
-                        hash=hashes[segment_id],
-                        path=path,
-                    ))
+                    self._segments_append(
+                        UStreamTVSegment(
+                            uri="",
+                            num=num,
+                            duration=duration,
+                            available_at=current_time + timedelta(seconds=(num - current_id - 1) * duration / 1000),
+                            hash=hashes[segment_id],
+                            path=path,
+                        ),
+                    )
 
         self._set_ready()
 
     # ----
 
-    _MESSAGE_HANDLERS: Dict[str, Dict[str, Callable[["UStreamTVWsClient", Any], None]]] = {
+    _MESSAGE_HANDLERS: Mapping[str, Mapping[str, Callable[[UStreamTVWsClient, Any], None]]] = {
         "warning": {
             "code": _handle_warning,
         },
@@ -339,8 +353,8 @@ class UStreamTVWsClient(WebsocketClient):
 
 
 class UStreamTVStreamWriter(SegmentedStreamWriter[UStreamTVSegment, Response]):
-    reader: "UStreamTVStreamReader"
-    stream: "UStreamTVStream"
+    reader: UStreamTVStreamReader
+    stream: UStreamTVStream
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -359,7 +373,7 @@ class UStreamTVStreamWriter(SegmentedStreamWriter[UStreamTVSegment, Response]):
             self.queue(segment, self.executor.submit(self.fetch, segment, False))
 
     # noinspection PyMethodOverriding
-    def fetch(self, segment: UStreamTVSegment, is_init: bool):  # type: ignore[override]
+    def fetch(self, segment: UStreamTVSegment, is_init: bool):  # type: ignore[override, ty:invalid-method-override]
         if self.closed:  # pragma: no cover
             return
 
@@ -383,11 +397,11 @@ class UStreamTVStreamWriter(SegmentedStreamWriter[UStreamTVSegment, Response]):
         except StreamError as err:
             log.error(f"Failed to fetch {self.stream.kind} segment {segment.num}: {err}")
 
-    def write(self, segment: UStreamTVSegment, res: Response, *data):
+    def write(self, segment: UStreamTVSegment, result: Response, *data):
         if self.closed:  # pragma: no cover
             return
         try:
-            for chunk in res.iter_content(8192):
+            for chunk in result.iter_content(8192):
                 self.reader.buffer.write(chunk)
             log.debug(f"Download of {self.stream.kind} segment {segment.num} complete")
         except OSError as err:
@@ -395,14 +409,14 @@ class UStreamTVStreamWriter(SegmentedStreamWriter[UStreamTVSegment, Response]):
 
 
 class UStreamTVStreamWorker(SegmentedStreamWorker[UStreamTVSegment, Response]):
-    reader: "UStreamTVStreamReader"
-    writer: "UStreamTVStreamWriter"
-    stream: "UStreamTVStream"
+    reader: UStreamTVStreamReader
+    writer: UStreamTVStreamWriter
+    stream: UStreamTVStream
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.wsclient = self.stream.wsclient
-        self.segment_id = self.wsclient.stream_initial_id
+        self.sequence = self.wsclient.stream_initial_id or -1
         self.queue = self.wsclient.segments_subscribe()
 
     def iter_segments(self):
@@ -420,21 +434,21 @@ class UStreamTVStreamWorker(SegmentedStreamWorker[UStreamTVSegment, Response]):
             if self.closed:
                 return
 
-            if segment.num < self.segment_id:
+            if segment.num < self.sequence:
                 continue
 
             log.debug(f"Adding {self.stream.kind} segment {segment.num} to queue")
             yield segment
-            self.segment_id = segment.num + 1
+            self.sequence = segment.num + 1
 
 
 class UStreamTVStreamReader(SegmentedStreamReader[UStreamTVSegment, Response]):
     __worker__ = UStreamTVStreamWorker
     __writer__ = UStreamTVStreamWriter
 
-    stream: "UStreamTVStream"
-    worker: "UStreamTVStreamWorker"
-    writer: "UStreamTVStreamWriter"
+    stream: UStreamTVStream
+    worker: UStreamTVStreamWorker
+    writer: UStreamTVStreamWriter
 
     def open(self):
         self.stream.wsclient.opened.set()
@@ -453,7 +467,7 @@ class UStreamTVStream(Stream):
         session,
         kind: str,
         wsclient: UStreamTVWsClient,
-        stream_format: Union[StreamFormatVideo, StreamFormatAudio],
+        stream_format: StreamFormatVideo | StreamFormatAudio,
     ):
         super().__init__(session)
         self.kind = kind
@@ -467,17 +481,22 @@ class UStreamTVStream(Stream):
         return reader
 
 
-@pluginmatcher(re.compile(r"""
-    https?://(?:(?:www\.)?ustream\.tv|video\.ibm\.com)
-    (?:
-        /combined-embed
-        /(?P<combined_channel_id>\d+)
-        (?:/video/(?P<combined_video_id>\d+))?
-        |
-        (?:(?:/embed/|/channel/(?:id/)?)(?P<channel_id>\d+))?
-        (?:(?:/embed)?/recorded/(?P<video_id>\d+))?
-    )
-""", re.VERBOSE))
+@pluginmatcher(
+    re.compile(
+        r"""
+            https?://(?:(?:www\.)?ustream\.tv|video\.ibm\.com)
+            (?:
+                /combined-embed
+                /(?P<combined_channel_id>\d+)
+                (?:/video/(?P<combined_video_id>\d+))?
+                |
+                (?:(?:/embed/|/channel/(?:id/)?)(?P<channel_id>\d+))?
+                (?:(?:/embed)?/recorded/(?P<video_id>\d+))?
+            )
+        """,
+        re.VERBOSE,
+    ),
+)
 @pluginargument(
     "password",
     sensitive=True,
@@ -523,7 +542,8 @@ class UStreamTV(Plugin):
             password=self.get_option("password"),
         )
         log.debug(
-            "Connecting to UStream API: " + ", ".join([
+            "Connecting to UStream API: "
+            + ", ".join([
                 f"media_id={media_id}",
                 f"application={application}",
                 f"referrer={self.url}",
@@ -537,21 +557,24 @@ class UStreamTV(Plugin):
             not wsclient.ready.wait(self.STREAM_READY_TIMEOUT)
             or not wsclient.is_alive()
             or wsclient.stream_error
-        ):
+        ):  # fmt: skip
             log.error(wsclient.stream_error or "Waiting for stream data timed out.")
             wsclient.close()
             return
 
         if not wsclient.stream_formats_audio:
-            for video in wsclient.stream_formats_video:
+            for video in wsclient.stream_formats_video or []:
                 yield f"{video.height}p", UStreamTVStream(self.session, "video", wsclient, video)
         else:
-            for video in wsclient.stream_formats_video:
+            for video in wsclient.stream_formats_video or []:
                 for audio in wsclient.stream_formats_audio:
-                    yield f"{video.height}p+a{audio.bitrate}k", MuxedStream(
-                        self.session,
-                        UStreamTVStream(self.session, "video", wsclient, video),
-                        UStreamTVStream(self.session, "audio", wsclient, audio),
+                    yield (
+                        f"{video.height}p+a{audio.bitrate}k",
+                        MuxedStream(
+                            self.session,
+                            UStreamTVStream(self.session, "video", wsclient, video),
+                            UStreamTVStream(self.session, "audio", wsclient, audio),
+                        ),
                     )
 
 

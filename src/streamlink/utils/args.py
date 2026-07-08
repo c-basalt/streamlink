@@ -1,88 +1,101 @@
-import argparse
+from __future__ import annotations
+
 import re
-from typing import Optional, Type
+from typing import Any, Generic, TypeVar
 
 
-_filesize_re = re.compile(r"""
-    (?P<size>\d+(\.\d+)?)
-    (?P<modifier>[Kk]|[Mm])?
-    (?:[Bb])?
-""", re.VERBOSE)
-_keyvalue_re = re.compile(r"(?P<key>[^=]+)\s*=\s*(?P<value>.*)")
+_BOOLEAN_TRUE = "yes", "1", "true", "on"
+_BOOLEAN_FALSE = "no", "0", "false", "off"
+
+_FILESIZE_RE = re.compile(r"^(?P<size>\d+(\.\d+)?)(?P<modifier>[km])?b?$", re.IGNORECASE)
+_FILESIZE_UNITS = {
+    "k": 2**10,
+    "m": 2**20,
+}
+
+_KEYVALUE_RE = re.compile(r"^(?P<key>[^=\s]+)\s*=\s*(?P<value>.*)$")
 
 
-def boolean(value):
-    truths = ["yes", "1", "true", "on"]
-    falses = ["no", "0", "false", "off"]
-    if value.lower() not in truths + falses:
-        raise argparse.ArgumentTypeError("{0} was not one of {{{1}}}".format(
-            value, ", ".join(truths + falses)))
+def boolean(value: str) -> bool:
+    if value.lower() not in _BOOLEAN_TRUE + _BOOLEAN_FALSE:
+        raise ValueError(f"{value} is not one of {{{', '.join(_BOOLEAN_TRUE + _BOOLEAN_FALSE)}}}")
 
-    return value.lower() in truths
+    return value.lower() in _BOOLEAN_TRUE
 
 
-def comma_list(values):
+def comma_list(values: str) -> list[str]:
     return [val.strip() for val in values.split(",")]
 
 
-def comma_list_filter(acceptable):
-    def func(p):
-        values = comma_list(p)
-        return list(filter(lambda v: v in acceptable, values))
+# noinspection PyPep8Naming
+class comma_list_filter:
+    def __init__(self, acceptable: list[str], unique: bool = False):
+        self.acceptable = tuple(acceptable)
+        self.unique = unique
 
-    return func
+    def __call__(self, values: str) -> list[str]:
+        res = [item for item in comma_list(values) if item in self.acceptable]
+        return sorted(set(res)) if self.unique else res
+
+    def __hash__(self):
+        return hash((self.acceptable, self.unique))
 
 
-def filesize(value):
-    match = _filesize_re.match(value)
+def filesize(value: str) -> int:
+    match = _FILESIZE_RE.match(value.strip())
     if not match:
-        raise ValueError
+        raise ValueError("Invalid file size format")
 
-    size = float(match.group("size"))
-    if not size:
-        raise ValueError
-
-    modifier = match.group("modifier")
-    if modifier in ("M", "m"):
-        size *= 1024 * 1024
-    elif modifier in ("K", "k"):
-        size *= 1024
+    size = float(match["size"])
+    size *= _FILESIZE_UNITS.get((match["modifier"] or "").lower(), 1)
 
     return num(int, ge=1)(size)
 
 
-def keyvalue(value):
-    match = _keyvalue_re.match(value)
+def keyvalue(value: str) -> tuple[str, str]:
+    match = _KEYVALUE_RE.match(value.lstrip())
     if not match:
-        raise ValueError
+        raise ValueError("Invalid key=value format")
 
-    return match.group("key", "value")
+    return match["key"], match["value"]
 
 
-def num(
-    numtype: Type[float],
-    ge: Optional[float] = None,
-    gt: Optional[float] = None,
-    le: Optional[float] = None,
-    lt: Optional[float] = None,
-):
-    def func(value):
-        value = numtype(value)
+_TNum = TypeVar("_TNum", int, float)
 
-        if ge is not None and value < ge:
-            raise argparse.ArgumentTypeError(f"{numtype.__name__} value must be >={ge}, but is {value}")
-        if gt is not None and value <= gt:
-            raise argparse.ArgumentTypeError(f"{numtype.__name__} value must be >{gt}, but is {value}")
-        if le is not None and value > le:
-            raise argparse.ArgumentTypeError(f"{numtype.__name__} value must be <={le}, but is {value}")
-        if lt is not None and value >= lt:
-            raise argparse.ArgumentTypeError(f"{numtype.__name__} value must be <{lt}, but is {value}")
 
-        return value
+# noinspection PyPep8Naming
+class num(Generic[_TNum]):
+    def __init__(
+        self,
+        numtype: type[_TNum],
+        ge: _TNum | None = None,
+        gt: _TNum | None = None,
+        le: _TNum | None = None,
+        lt: _TNum | None = None,
+    ):
+        self.numtype: type[_TNum] = numtype
+        self.ge: _TNum | None = ge
+        self.gt: _TNum | None = gt
+        self.le: _TNum | None = le
+        self.lt: _TNum | None = lt
+        self.__name__ = numtype.__name__
 
-    func.__name__ = numtype.__name__
+    def __call__(self, value: Any) -> _TNum:
+        val: _TNum = self.numtype(value)
 
-    return func
+        if self.ge is not None and not (val >= self.ge):
+            raise ValueError(f"{self.__name__} value must be >={self.ge}, but is {val}")
+        if self.gt is not None and not (val > self.gt):
+            raise ValueError(f"{self.__name__} value must be >{self.gt}, but is {val}")
+        if self.le is not None and not (val <= self.le):
+            raise ValueError(f"{self.__name__} value must be <={self.le}, but is {val}")
+        if self.lt is not None and not (val < self.lt):
+            raise ValueError(f"{self.__name__} value must be <{self.lt}, but is {val}")
+
+        return val
+
+    def __hash__(self) -> int:
+        return hash((self.numtype, self.ge, self.gt, self.le, self.lt))
 
 
 __all__ = [

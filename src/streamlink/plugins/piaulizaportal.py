@@ -8,22 +8,22 @@ $account Purchased tickets are required.
 $notes Tickets purchased at "PIA LIVE STREAM" are used for this platform.
 """
 
-import logging
 import re
 import time
 from urllib.parse import parse_qsl, urlparse
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https://ulizaportal\.jp/pages/(?P<id>[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})",
-))
+@pluginmatcher(
+    re.compile(r"https://ulizaportal\.jp/pages/(?P<id>[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})"),
+)
 class PIAULIZAPortal(Plugin):
     _URL_PLAYER_DATA = "https://player-api.p.uliza.jp/v1/players/"
     _URL_PLAYLIST = "https://vms-api.p.uliza.jp/v1/prog-index.m3u8"

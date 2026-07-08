@@ -9,14 +9,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: File permissions
+        if: ${{ !cancelled() }}
         run: "! grep -Ev '^644' <(git ls-files src/ tests/ | xargs stat '--format=%a %n')"
       - name: File encodings
+        if: ${{ !cancelled() }}
         run: "! grep -E -e 'UTF-[^8]' -e 'UTF-[^ ]+ \\(with BOM\\)' <(git ls-files src/ tests/ | xargs stat '--format=%a %n')"
       - name: Line terminators
+        if: ${{ !cancelled() }}
         run: "! grep 'with CRLF line terminators' <(git ls-files | file -nNf-)"
       - name: No unicode bidirectional control characters
+        if: ${{ !cancelled() }}
         run: "! git grep -EIn $'[\\u2066\\u2067\\u2068\\u2069\\u202A\\u202B\\u202C\\u202D\\u202E]'"
 
   style:
@@ -24,35 +28,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.11"
-      - name: Install Python dependencies
-        run: >
-          python -m pip install -U
-          -e .
-          -r dev-requirements.txt
-      - name: ruff
-        run: >
-          python -m ruff .
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: ruff check
+        if: ${{ !cancelled() }}
+        run: uv run --frozen --group lint ruff check .
+      - name: ruff format
+        if: ${{ !cancelled() }}
+        run: uv run --frozen --group lint ruff format --diff .
 
   typing:
     name: Typing
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.11"
-      - name: Install Python dependencies
-        run: >
-          python -m pip install -U
-          -e .
-          -r dev-requirements.txt
-          -r docs-requirements.txt
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: ty
+        if: ${{ !cancelled() }}
+        run: uv run --frozen --group typing ty check
       - name: mypy
-        run: |
-          python -m mypy --no-incremental
-          python -m mypy --no-incremental docs
+        if: ${{ !cancelled() }}
+        run: uv run --frozen --group typing mypy --no-incremental
+      - name: mypy docs
+        if: ${{ !cancelled() }}
+        run: uv run --frozen --group typing mypy --python-version=3.12 --no-incremental docs

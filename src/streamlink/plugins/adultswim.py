@@ -6,25 +6,22 @@ $region various
 $notes VODs may be protected by DRM
 """
 
-import logging
 import re
 from urllib.parse import urlparse, urlunparse
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, PluginError, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 from streamlink.utils.parse import parse_json
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(r"""
-    https?://(?:www\.)?adultswim\.com
-    /(streams|videos)
-    (?:/([^/]+))?
-    (?:/([^/]+))?
-""", re.VERBOSE))
+@pluginmatcher(
+    re.compile(r"https?://(?:www\.)?adultswim\.com/(streams|videos)(?:/([^/]+))?(?:/([^/]+))?"),
+)
 class AdultSwim(Plugin):
     token_url = "https://token.ngtv.io/token/token_spe"
     video_data_url = "https://www.adultswim.com/api/shows/v1/media/{0}/desktop"
@@ -43,24 +40,34 @@ class AdultSwim(Plugin):
 
     truncate_url_re = re.compile(r"""(.*)/\w+/?""")
 
-    _api_schema = validate.Schema({
-        "media": {
-            "desktop": {
-                str: {
-                    "url": validate.url(),
+    _api_schema = validate.Schema(
+        {
+            "media": {
+                "desktop": {
+                    str: {
+                        "url": validate.url(),
+                    },
                 },
             },
-        }},
+        },
         validate.get("media"),
         validate.get("desktop"),
         validate.filter(lambda k, v: k in ["unprotected", "bulkaes"]),
     )
 
-    _stream_data_schema = validate.Schema({
-        "props": {"__REDUX_STATE__": {"streams": [{
-            "id": str,
-            "stream": str,
-        }]}}},
+    _stream_data_schema = validate.Schema(
+        {
+            "props": {
+                "__REDUX_STATE__": {
+                    "streams": [
+                        {
+                            "id": str,
+                            "stream": str,
+                        },
+                    ],
+                },
+            },
+        },
         validate.get("props"),
         validate.get("__REDUX_STATE__"),
         validate.get("streams"),
@@ -74,13 +81,19 @@ class AdultSwim(Plugin):
         validate.get("auth"),
     )
 
-    _video_data_schema = validate.Schema({
-        "props": {"pageProps": {"__APOLLO_STATE__": {
-            str: {
-                validate.optional("id"): str,
-                validate.optional("slug"): str,
+    _video_data_schema = validate.Schema(
+        {
+            "props": {
+                "pageProps": {
+                    "__APOLLO_STATE__": {
+                        str: {
+                            validate.optional("id"): str,
+                            validate.optional("slug"): str,
+                        },
+                    },
+                },
             },
-        }}}},
+        },
         validate.get("props"),
         validate.get("pageProps"),
         validate.get("__APOLLO_STATE__"),
@@ -102,7 +115,7 @@ class AdultSwim(Plugin):
     def _get_video_data(self, slug):
         m = self.truncate_url_re.search(self.url)
         if m and m.group(1):
-            log.debug("Truncated URL={0}".format(m.group(1)))
+            log.debug(f"Truncated URL={m.group(1)}")
         else:
             raise PluginError("Failed to truncate URL")
 
@@ -124,20 +137,23 @@ class AdultSwim(Plugin):
         app_id_js_url = m and m.group(1)
         if not app_id_js_url:
             raise PluginError("Could not determine app_id_js_url")
-        log.debug("app_id_js_url={0}".format(app_id_js_url))
+        log.debug(f"app_id_js_url={app_id_js_url}")
 
         res = self.session.http.get(app_id_js_url)
         m = self.app_id_re.search(res.text)
         app_id = m and m.group(1)
         if not app_id:
             raise PluginError("Could not determine app_id")
-        log.debug("app_id={0}".format(app_id))
+        log.debug(f"app_id={app_id}")
 
-        res = self.session.http.get(self.token_url, params=dict(
-            format="json",
-            appId=app_id,
-            path=path,
-        ))
+        res = self.session.http.get(
+            self.token_url,
+            params=dict(
+                format="json",
+                appId=app_id,
+                path=path,
+            ),
+        )
 
         token_data = self.session.http.json(res, schema=self._token_schema)
         if "error" in token_data:
@@ -151,11 +167,9 @@ class AdultSwim(Plugin):
         if url_type == "streams" and not show_name:
             url_type = "live-stream"
         elif not show_name:
-            raise PluginError("Missing show_name for url_type: {0}".format(
-                url_type,
-            ))
+            raise PluginError(f"Missing show_name for url_type: {url_type}")
 
-        log.debug("URL type={0}".format(url_type))
+        log.debug(f"URL type={url_type}")
 
         if url_type == "live-stream":
             video_id = self._get_stream_data(url_type)
@@ -164,17 +178,15 @@ class AdultSwim(Plugin):
         elif url_type == "videos":
             if show_name is None or episode_name is None:
                 raise PluginError(
-                    "Missing show_name or episode_name for url_type: {0}".format(
-                        url_type,
-                    ),
+                    f"Missing show_name or episode_name for url_type: {url_type}",
                 )
             video_id = self._get_video_data(episode_name)
         else:
-            raise PluginError("Unrecognised url_type: {0}".format(url_type))
+            raise PluginError(f"Unrecognised url_type: {url_type}")
 
         if video_id is None:
             raise PluginError("Could not find video_id")
-        log.debug("Video ID={0}".format(video_id))
+        log.debug(f"Video ID={video_id}")
 
         res = self.session.http.get(self.video_data_url.format(video_id))
 
@@ -189,13 +201,13 @@ class AdultSwim(Plugin):
                 url_parsed.netloc,
                 url_parsed.path,
                 url_parsed.params,
-                "{0}={1}".format("hdnts", token),
+                f"hdnts={token}",
                 url_parsed.fragment,
             ))
         else:
             raise PluginError("Could not find a usable URL in url_data")
 
-        log.debug("URL={0}".format(url))
+        log.debug(f"URL={url}")
 
         return HLSStream.parse_variant_playlist(self.session, url)
 

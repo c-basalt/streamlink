@@ -6,41 +6,46 @@ $type live, vod
 $notes Only non-premium content is available
 """
 
-import logging
 import re
 from time import time
 from urllib.parse import urljoin, urlparse
 
+from streamlink.logger import getLogger
 from streamlink.plugin import Plugin, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.hls import HLSStream
 
 
-log = logging.getLogger(__name__)
+log = getLogger(__name__)
 
 
-@pluginmatcher(re.compile(
-    r"https?://(\w+\.)?(?:olympics|olympicchannel)\.com/(?:[\w-]+/)?../.+",
-))
+@pluginmatcher(
+    re.compile(r"https?://(\w+\.)?(?:olympics|olympicchannel)\.com/(?:[\w-]+/)?../.+"),
+)
 class OlympicChannel(Plugin):
     def _get_streams(self):
-        data = self.session.http.get(self.url, schema=validate.Schema(
-            validate.parse_html(),
-            validate.union((
-                validate.xml_xpath_string(".//*[@data-content-url][1]/@data-content-url"),
-                validate.xml_xpath_string(".//*[@data-d3vp-plugin='THEOplayer'][@data-content][1]/@data-content"),
-            )),
-        ))
+        data = self.session.http.get(
+            self.url,
+            schema=validate.Schema(
+                validate.parse_html(),
+                validate.union((
+                    validate.xml_xpath_string(".//*[@data-content-url][1]/@data-content-url"),
+                    validate.xml_xpath_string(".//*[@data-d3vp-plugin='THEOplayer'][@data-content][1]/@data-content"),
+                )),
+            ),
+        )
         if not data:
             return
 
         api_url, api_data = data
         api_schema = validate.Schema(
             validate.parse_json(),
-            [{
-                validate.optional("src"): validate.url(),
-                validate.optional("srcType"): "HLS",
-            }],
+            [
+                {
+                    validate.optional("src"): validate.url(),
+                    validate.optional("srcType"): "HLS",
+                },
+            ],
             validate.get((0, "src")),
         )
         if api_data:

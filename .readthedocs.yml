@@ -1,0 +1,23 @@
+version: 2
+
+build:
+  os: ubuntu-lts-latest
+  tools:
+    python: "3.14"
+  jobs:
+    post_checkout:
+      - "[ ${READTHEDOCS_VERSION_TYPE} = external ] || exit 183"
+      - git ls-remote --tags --sort=version:refname 2>&- | awk "END{printf \"+%s:%s\\n\",\$2,\$2}" | git fetch origin --depth=300
+      - git fetch origin --depth=300 --update-shallow
+      - git describe --tags --long --dirty
+
+python:
+  install:
+    - method: uv
+      command: sync
+      extras: all
+      groups:
+        - docs
+
+sphinx:
+  configuration: docs/conf.py

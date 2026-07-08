@@ -1,18 +1,17 @@
+from __future__ import annotations
+
 import copy
 import itertools
-import logging
 from collections import defaultdict
 from contextlib import contextmanager, suppress
-from datetime import datetime
 from time import time
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
+from typing import TYPE_CHECKING, Any, cast
 
 from requests import Response
 
 from streamlink.exceptions import PluginError, StreamError
-from streamlink.session import Streamlink
-from streamlink.stream.dash.manifest import MPD, Representation, freeze_timeline
+from streamlink.logger import getLogger
+from streamlink.stream.dash.manifest import MPD, freeze_timeline
 from streamlink.stream.dash.segment import DASHSegment
 from streamlink.stream.ffmpegmux import FFMPEGMuxer
 from streamlink.stream.segmented import SegmentedStreamReader, SegmentedStreamWorker, SegmentedStreamWriter
@@ -22,12 +21,22 @@ from streamlink.utils.parse import parse_xml
 from streamlink.utils.times import now
 
 
-log = logging.getLogger(".".join(__name__.split(".")[:-1]))
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from datetime import datetime
+
+    from streamlink.session import Streamlink
+    from streamlink.stream.dash.manifest import Representation
+
+
+log = getLogger(".".join(__name__.split(".")[:-1]))
 
 
 class DASHStreamWriter(SegmentedStreamWriter[DASHSegment, Response]):
-    reader: "DASHStreamReader"
-    stream: "DASHStream"
+    WRITE_CHUNK_SIZE: int = 8192
+
+    reader: DASHStreamReader
+    stream: DASHStream
 
     def fetch(self, segment: DASHSegment):
         if self.closed:
@@ -62,8 +71,8 @@ class DASHStreamWriter(SegmentedStreamWriter[DASHSegment, Response]):
         except StreamError as err:
             log.error(f"{self.reader.mime_type} segment {name}: failed ({err})")
 
-    def write(self, segment, res, chunk_size=8192):
-        for chunk in res.iter_content(chunk_size):
+    def write(self, segment: DASHSegment, result: Response, *data):
+        for chunk in result.iter_content(self.WRITE_CHUNK_SIZE):
             if self.closed:
                 log.warning(f"{self.reader.mime_type} segment {segment.name}: aborted")
                 return
@@ -73,15 +82,16 @@ class DASHStreamWriter(SegmentedStreamWriter[DASHSegment, Response]):
 
 
 class DASHStreamWorker(SegmentedStreamWorker[DASHSegment, Response]):
-    reader: "DASHStreamReader"
-    writer: "DASHStreamWriter"
-    stream: "DASHStream"
+    reader: DASHStreamReader
+    writer: DASHStreamWriter
+    stream: DASHStream
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.mpd = self.stream.mpd
 
         self.manifest_reload_retries = self.session.options.get("dash-manifest-reload-attempts")
+        self.duration_limit = self.stream.duration or self.duration_limit
 
     @contextmanager
     def sleeper(self, duration):
@@ -89,10 +99,14 @@ class DASHStreamWorker(SegmentedStreamWorker[DASHSegment, Response]):
         Do something and then wait for a given duration minus the time it took doing something
         """
         s = time()
-        yield
+        yield  # noqa: RUF075
         time_to_sleep = duration - (time() - s)
         if time_to_sleep > 0:
             self.wait(time_to_sleep)
+
+    @property
+    def _queue_deadline_wait(self) -> float:
+        return self.mpd.minimumUpdatePeriod.total_seconds()
 
     def iter_segments(self):
         init = True
@@ -104,28 +118,38 @@ class DASHStreamWorker(SegmentedStreamWorker[DASHSegment, Response]):
             if self.mpd.type == "static":
                 refresh_wait = 5
             else:
-                refresh_wait = max(
-                    self.mpd.minimumUpdatePeriod.total_seconds(),
-                    representation.period.duration.total_seconds() if representation else 0,
-                ) or 5
+                refresh_wait = (
+                    max(
+                        self.mpd.minimumUpdatePeriod.total_seconds(),
+                        representation.period.duration.total_seconds() if representation else 0,
+                    )
+                    or 5
+                )
 
             with self.sleeper(refresh_wait * back_off_factor):
                 if not representation:
                     continue
 
+                queued = False
                 iter_segments = representation.segments(
+                    sequence=self.sequence,
                     init=init,
                     # sync initial timeline generation between audio and video threads
                     timestamp=self.reader.timestamp if init else None,
                 )
                 for segment in iter_segments:
-                    if self.closed:
-                        break
-                    yield segment
+                    if init and not segment.init:
+                        self.sequence = segment.num
+                        init = False
+                    queued |= yield segment
 
                 # close worker if type is not dynamic (all segments were put into writer queue)
                 if self.mpd.type != "dynamic":
                     self.close()
+                    return
+
+                # Implicit end of stream
+                if self.check_queue_deadline(queued):
                     return
 
                 if not self.reload():
@@ -133,16 +157,14 @@ class DASHStreamWorker(SegmentedStreamWorker[DASHSegment, Response]):
                 else:
                     back_off_factor = 1
 
-                init = False
-
     def reload(self):
         if self.closed:
             return
 
         self.reader.buffer.wait_free()
-        log.debug(f"Reloading manifest {self.reader.ident!r}")
+        log.debug("Reloading manifest %r", self.reader.ident)
         res = self.session.http.get(
-            self.mpd.url,
+            cast("str", self.mpd.url),
             exception=StreamError,
             retries=self.manifest_reload_retries,
             **self.stream.args,
@@ -156,6 +178,11 @@ class DASHStreamWorker(SegmentedStreamWorker[DASHSegment, Response]):
         )
 
         new_rep = new_mpd.get_representation(self.reader.ident)
+        if not new_rep:
+            log.error(f"Failed to find matching DASH representation: {self.reader.ident!r}")
+            self.close()
+            return False
+
         with freeze_timeline(new_mpd):
             changed = len(list(itertools.islice(new_rep.segments(), 1))) > 0
 
@@ -169,17 +196,18 @@ class DASHStreamReader(SegmentedStreamReader[DASHSegment, Response]):
     __worker__ = DASHStreamWorker
     __writer__ = DASHStreamWriter
 
-    worker: "DASHStreamWorker"
-    writer: "DASHStreamWriter"
-    stream: "DASHStream"
+    worker: DASHStreamWorker
+    writer: DASHStreamWriter
+    stream: DASHStream
 
     def __init__(
         self,
-        stream: "DASHStream",
+        stream: DASHStream,
         representation: Representation,
         timestamp: datetime,
+        name: str | None = None,
     ):
-        super().__init__(stream)
+        super().__init__(stream, name=name)
         self.ident = representation.ident
         self.mime_type = representation.mimeType
         self.timestamp = timestamp
@@ -196,8 +224,9 @@ class DASHStream(Stream):
         self,
         session: Streamlink,
         mpd: MPD,
-        video_representation: Optional[Representation] = None,
-        audio_representation: Optional[Representation] = None,
+        video_representation: Representation | None = None,
+        audio_representation: Representation | None = None,
+        duration: float | None = None,
         **kwargs,
     ):
         """
@@ -205,6 +234,7 @@ class DASHStream(Stream):
         :param mpd: Parsed MPD manifest
         :param video_representation: Video representation
         :param audio_representation: Audio representation
+        :param duration: Number of seconds until ending the stream
         :param kwargs: Additional keyword arguments passed to :meth:`requests.Session.request`
         """
 
@@ -212,6 +242,7 @@ class DASHStream(Stream):
         self.mpd = mpd
         self.video_representation = video_representation
         self.audio_representation = audio_representation
+        self.duration = duration
         self.args = session.http.valid_request_args(**kwargs)
 
     def __json__(self):  # noqa: PLW3201
@@ -237,7 +268,7 @@ class DASHStream(Stream):
         return self.mpd.url
 
     @staticmethod
-    def fetch_manifest(session: Streamlink, url_or_manifest: str, **request_args) -> Tuple[str, Dict[str, Any]]:
+    def fetch_manifest(session: Streamlink, url_or_manifest: str, **request_args) -> tuple[str, dict[str, Any]]:
         if url_or_manifest.startswith("<?xml"):
             return url_or_manifest, {}
 
@@ -247,14 +278,10 @@ class DASHStream(Stream):
         manifest: str = res.text
         url: str = res.url
 
-        urlp = list(urlparse(url))
-        urlp[2], _ = urlp[2].rsplit("/", 1)
-        base_url: str = urlunparse(urlp)
-
-        return manifest, dict(url=url, base_url=base_url)
+        return manifest, dict(url=url, base_url=url)
 
     @staticmethod
-    def parse_mpd(manifest: str, mpd_params: Dict[str, Any]) -> MPD:
+    def parse_mpd(manifest: str, mpd_params: Mapping[str, Any]) -> MPD:
         node = parse_xml(manifest, ignore_ns=True)
 
         return MPD(node, **mpd_params)
@@ -264,23 +291,24 @@ class DASHStream(Stream):
         cls,
         session: Streamlink,
         url_or_manifest: str,
-        period: int = 0,
+        period: int | str = 0,
         with_video_only: bool = False,
         with_audio_only: bool = False,
         **kwargs,
-    ) -> Dict[str, "DASHStream"]:
+    ) -> dict[str, DASHStream]:
         """
         Parse a DASH manifest file and return its streams.
 
         :param session: Streamlink session instance
         :param url_or_manifest: URL of the manifest file or an XML manifest string
-        :param period: Which MPD period to use (index number) for finding representations
+        :param period: Which MPD period to use (index number (int) or ``id`` attribute (str)) for finding representations
         :param with_video_only: Also return video-only streams, otherwise only return muxed streams
         :param with_audio_only: Also return audio-only streams, otherwise only return muxed streams
-        :param kwargs: Additional keyword arguments passed to :meth:`requests.Session.request`
+        :param kwargs: Additional keyword arguments passed to :class:`DASHStream` or :meth:`requests.Session.request`
         """
 
         manifest, mpd_params = cls.fetch_manifest(session, url_or_manifest, **kwargs)
+        passthrough_encrypted = session.options.get("stream-passthrough-encrypted")
 
         try:
             mpd = cls.parse_mpd(manifest, mpd_params)
@@ -288,20 +316,41 @@ class DASHStream(Stream):
             raise PluginError(f"Failed to parse MPD manifest: {err}") from err
 
         source = mpd_params.get("url", "MPD manifest")
-        video: List[Optional[Representation]] = [None] if with_audio_only else []
-        audio: List[Optional[Representation]] = [None] if with_video_only else []
+        video: list[Representation | None] = [None] if with_audio_only else []
+        audio: list[Representation | None] = [None] if with_video_only else []
+
+        available_periods = [f"{idx}{f' (id={p.id!r})' if p.id is not None else ''}" for idx, p in enumerate(mpd.periods)]
+        log.debug(f"Available DASH periods: {', '.join(available_periods)}")
+
+        try:
+            if isinstance(period, int):
+                period_selection = mpd.periods[period]
+            else:
+                period_selection = mpd.periods_map[period]
+        except LookupError:
+            raise PluginError(
+                f"DASH period {period!r} not found. Select a valid period by index or by id attribute value.",
+            ) from None
 
         # Search for suitable video and audio representations
-        for aset in mpd.periods[period].adaptationSets:
-            if aset.contentProtections:
+        for aset in period_selection.adaptationSets:
+            if aset.contentProtections and not passthrough_encrypted:
                 raise PluginError(f"{source} is protected by DRM")
             for rep in aset.representations:
-                if rep.contentProtections:
+                if rep.contentProtections and not passthrough_encrypted:
                     raise PluginError(f"{source} is protected by DRM")
                 if rep.mimeType.startswith("video"):
                     video.append(rep)
                 elif rep.mimeType.startswith("audio"):  # pragma: no branch
                     audio.append(rep)
+
+        if passthrough_encrypted:
+            is_encrypted = any(
+                aset.contentProtections or any(rep.contentProtections for rep in aset.representations)
+                for aset in period_selection.adaptationSets
+            )
+            if is_encrypted:  # pragma: no branch
+                log.warning(f"{source} is protected by DRM and won't be decrypted")
 
         if not video:
             video.append(None)
@@ -383,18 +432,20 @@ class DASHStream(Stream):
         timestamp = now()
 
         if rep_video:
-            video = DASHStreamReader(self, rep_video, timestamp)
-            log.debug(f"Opening DASH reader for: {rep_video.ident!r} - {rep_video.mimeType}")
-            video.open()
+            video = DASHStreamReader(self, rep_video, timestamp, name="video")
+            log.debug("Opening DASH reader for: %r - %s", rep_video.ident, rep_video.mimeType)
 
         if rep_audio:
-            audio = DASHStreamReader(self, rep_audio, timestamp)
-            log.debug(f"Opening DASH reader for: {rep_audio.ident!r} - {rep_audio.mimeType}")
-            audio.open()
+            audio = DASHStreamReader(self, rep_audio, timestamp, name="audio")
+            log.debug("Opening DASH reader for: %r - %s", rep_audio.ident, rep_audio.mimeType)
 
-        if video and audio:
+        if video and audio and FFMPEGMuxer.is_usable(self.session):
+            video.open()
+            audio.open()
             return FFMPEGMuxer(self.session, video, audio, copyts=True).open()
         elif video:
+            video.open()
             return video
         elif audio:
+            audio.open()
             return audio
